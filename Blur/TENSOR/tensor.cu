@@ -115,7 +115,7 @@ int main(int argc, char** argv)
 	float * filter=createFilter(filterWidth);
 
 
-	if (argc > 2)
+	/*if (argc > 2)
 	{
 		imagePath = argv[1];
 		outputPath = argv[2];
@@ -125,7 +125,9 @@ int main(int argc, char** argv)
 		printf("Please provide input and output image files as arguments to this application.\n");
 		exit(1);
 	}
-
+        */
+       imagePath = "Blur/grande.jpg";
+       outputPath = "Blur/grande_res.jpg";
 
 
 	//Read the image
