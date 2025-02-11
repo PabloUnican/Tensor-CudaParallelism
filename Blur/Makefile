@@ -4,13 +4,13 @@
 NVCC = nvcc
 
 # Compiler flags
-CFLAGS = -O2 -arch=sm_50
+CFLAGS = -O0 -arch=sm_89
 
 # Target executable
 TARGET = my_cuda_program
 
 # Source files
-SRCS = Blur/TENSOR/tensor.cu
+SRCS = TENSOR/tensor.cu
 
 # Build the target
 $(TARGET): $(SRCS)

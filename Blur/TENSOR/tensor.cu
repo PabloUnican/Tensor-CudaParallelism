@@ -126,8 +126,8 @@ int main(int argc, char** argv)
 		exit(1);
 	}
         */
-       imagePath = "Blur/grande.jpg";
-       outputPath = "Blur/grande_res.jpg";
+       imagePath = "grande.jpg";
+       outputPath = "grande_res.jpg";
 
 
 	//Read the image
