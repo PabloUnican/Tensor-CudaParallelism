@@ -6,30 +6,37 @@
 #include <stdio.h>
 #include <time.h>
 
+// librerias para CUDA
+#include <cuda_runtime.h>
+#include <mma.h>
+#include <stdio.h>
+#include <cuda_fp16.h>
+#include <iostream>
+
 #define MAX_THREADS_PER_BLOCK 128
 
-float * createFilter(int width)
+half * createFilter(int width)
 {
         const float sigma = 2.f; // Standard deviation of the Gaussian distribution.
 
-        const int half = width / 2;
+        const int middle = width / 2;
         float sum = 0.f;
 
 
         // Create convolution matrix
-        float * res=(float *)malloc(width*width*sizeof(float));
+        half * res=(half *)malloc(width*width*sizeof(half));
 
 
         // Calculate filter sum first
-        for (int r = -half; r <= half; ++r)
+        for (int r = -middle; r <= middle; ++r)
         {
-                for (int c = -half; c <= half; ++c)
+                for (int c = -middle; c <= middle; ++c)
                 {
                         // e (natural logarithm base) to the power x, where x is what's in the brackets
                         float weight = expf(-static_cast<float>(c * c + r * r) / (2.f * sigma * sigma));
-                        int idx = (r + half) * width + c + half;
+                        int idx = (r + middle) * width + c + middle;
 
-                        res[idx] = weight;
+                        res[idx] = (half) weight;
                         sum += weight;
                 }
         }
@@ -37,13 +44,13 @@ float * createFilter(int width)
         // Normalize weight: sum of weights must equal 1
         float normal = 1.f / sum;
 
-        for (int r = -half; r <= half; ++r)
+        for (int r = -middle; r <= middle; ++r)
         {
-                for (int c = -half; c <= half; ++c)
+                for (int c = -middle; c <= middle; ++c)
                 {
-                        int idx = (r + half) * width + c + half;
+                        int idx = (r + middle) * width + c + middle;
 
-                        res[idx] *= normal;
+                        res[idx] *= (half) normal;
                 }
         }
         return res;
@@ -54,7 +61,7 @@ Kernel de CUDA para realizar el desenfoque gaussiano
 Estructura unidimensional de bloques (x para posicion)
 Estructura bidimensional de threads (x para posicion, y para canal)
 */ 
-__global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* const rawImage, int width, int height, int channels, const float* filter, int filterWidth)
+__global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* const rawImage, int width, int height, int channels, const half* filter, int filterWidth)
 {
         // Calcular la posicion del thread en la imagen
         int temp = blockIdx.x * blockDim.x + threadIdx.x;
@@ -65,11 +72,89 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
         // Comprobar thread util
         if (x >= width || y >= height || canal >= channels){return;}
 
+        const int warpId = temp / warpSize; // obtener el ID del warp
+        const int indexWarp = (threadIdx.x % (warpSize)); // obtener el índice del hilo dentro del warp
+
         // mitad ancho del filtro
         int halfFilterWidth = filterWidth / 2;
         // pixel desenfocado
         float blurredPixel = 0;
+
+        // Implementacion TENSOR
+        // Definir estructura matrices
+        nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, half, nvcuda::wmma::row_major> data;
+        nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, half, nvcuda::wmma::col_major> mask;
+        nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, half> result;
+
+        // mapear matriz "a" (cada fila = vecinos de un pixel)
+        alignas(128) // debe estar alineado
+        __shared__ half localMatrix[256]; // 16x16 = 256
+        __shared__ half filterMatrix[256];
+
+        //data matrix
+        // el indice no excede el numero de pixeles a cargar
+        if (indexWarp < 16) {
+                int neighbour = 0;
+                // Iterar por pixeles vecinos
+                for (int dataY = -halfFilterWidth; dataY <= halfFilterWidth; dataY++) {
+                        for (int dataX = -halfFilterWidth; dataX <= halfFilterWidth; dataX++) {
+                                
+                                //comprobacion de limites
+                                int imageX = min(max(x + dataX, 0), width - 1);
+                                int imageY = min(max(y + dataY, 0), height - 1);
+                                //agregar vecino a matriz
+                                localMatrix[indexWarp * 16 + neighbour] = (half) rawImage[((imageY * width + imageX) * channels) + canal];
+                                neighbour++;
+                        }
+                }
+                for (int i = neighbour; i < 16; i++) {
+                        localMatrix[indexWarp * 16 + i] = 0;
+                }
+        }
         
+        // filter matrix
+        if (indexWarp < filterWidth) {
+                // Iterar por pixeles vecinos
+                for (int filterX = 0; filterX < filterWidth; filterX++) {
+                                
+                        //agregar valor del filtro a matriz
+                        filterMatrix[indexWarp * 16 + filterX] = filter[indexWarp * filterWidth + filterX];
+                }
+                for (int i = filterWidth; i < 16; i++) {
+                        filterMatrix[indexWarp * 16 + i] = 0;
+                }
+        }
+        else if (indexWarp < 16) {
+                for (int i = 0; i < 16; i++) {
+                        filterMatrix[indexWarp * 16 + i] = 0;
+                }
+        }
+        __syncthreads();
+
+        // cargar en matriz data
+        nvcuda::wmma::load_matrix_sync(data, localMatrix, 16);
+        // cargar en matriz mask
+        nvcuda::wmma::load_matrix_sync(mask, filter, 16);
+        // inicializar resultados a cero
+        nvcuda::wmma::fill_fragment(result, 0.0f);
+
+        // ejecutar codigo en tensor
+        nvcuda::wmma::mma_sync(result, data, mask, result);
+        __syncthreads();
+        // almacenar resultados de vuelta en la memoria compartida
+        nvcuda::wmma::store_matrix_sync(localMatrix, result, 16, nvcuda::wmma::mem_row_major);
+        __syncthreads();
+
+        // almacenar resultados de vuelta en la memoria global
+        if (indexWarp < 16) {
+                // Iterar por el array
+                for (int dataX = 0; dataX < filterWidth; dataX++) {
+                        blurredImage[((y * width + x) * channels) + canal] = localMatrix[indexWarp * 16];
+                }
+        }
+        /*
+        
+        //Implementacion CUDA
         // Calcular el pixel desenfocado
         for (int filterY = -halfFilterWidth; filterY <= halfFilterWidth; filterY++) {
                 for (int filterX = -halfFilterWidth; filterX <= halfFilterWidth; filterX++) {
@@ -83,10 +168,12 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
                         
                         // Pixel de la imagen a tratar
                         uint8_t pixel = rawImage[((imageY * width + imageX) * channels) + canal];
-                        blurredPixel += ((float)pixel) * filter[filterIndex];
+                        blurredPixel += ((half)pixel) * filter[filterIndex];
                 }
         }
         blurredImage[((y * width + x) * channels) + canal] = (uint8_t)blurredPixel;
+
+        */
         
 }
 
@@ -111,8 +198,8 @@ int main(int argc, char** argv)
 	int height, width, bpp, channels=4;
 	uint8_t * originalImage, * blurredImage;
 
-	int filterWidth=9;
-	float * filter=createFilter(filterWidth);
+	int filterWidth=3;
+	half * filter=createFilter(filterWidth);
 
 
 	/*if (argc > 2)
@@ -146,16 +233,16 @@ int main(int argc, char** argv)
 
         // Definir punteros para la memoria de la GPU
         uint8_t *d_originalImage, *d_blurredImage;
-        float *d_filter;
+        half *d_filter;
 
         // Reservar memoria en la GPU para la imagen original y la imagen final
         cudaMalloc((void**)&d_originalImage, width * height * channels * sizeof(uint8_t));
         cudaMalloc((void**)&d_blurredImage, width * height * channels * sizeof(uint8_t));
-        cudaMalloc((void**)&d_filter, filterWidth * filterWidth * sizeof(float));
+        cudaMalloc((void**)&d_filter, filterWidth * filterWidth * sizeof(half));
 
         // Copiar la imagen original y filtro desde la memoria del host a la memoria de la GPU
         cudaMemcpy(d_originalImage, originalImage, width * height * channels * sizeof(uint8_t), cudaMemcpyHostToDevice);
-        cudaMemcpy(d_filter, filter, filterWidth * filterWidth * sizeof(float), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_filter, filter, filterWidth * filterWidth * sizeof(half), cudaMemcpyHostToDevice);
 
         //procedimiento
         dim3 blockDim(MAX_THREADS_PER_BLOCK / channels, channels);
