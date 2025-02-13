@@ -81,8 +81,8 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
 
         // Implementacion TENSOR
         // Definir estructura matrices
-        nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, half, nvcuda::wmma::col_major> data;
-        nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, half, nvcuda::wmma::row_major> mask;
+        nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, half, nvcuda::wmma::row_major> data;
+        nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, half, nvcuda::wmma::col_major> mask;
         nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, half> result;
 
         // mapear matriz "a" (cada fila = vecinos de un pixel)
@@ -114,41 +114,40 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
         // filter matrix
         if (indexWarp < filterWidth * filterWidth) {         
                 //agregar valor del filtro a matriz
-                filterMatrix[indexWarp * SIZE_MATRIX] = filter[indexWarp];
+                filterMatrix[indexWarp] = filter[indexWarp];
         }
         //rellenar fila con 0
         else if (indexWarp < SIZE_MATRIX) {
-                filterMatrix[indexWarp * SIZE_MATRIX] = 0;
+                filterMatrix[indexWarp] = 0;
         }
         // rellenar resto de matriz con 0
         if (indexWarp >= 1 && indexWarp < SIZE_MATRIX) {
                 for (int i = 0; i < SIZE_MATRIX; i++) {
-                        filterMatrix[i * SIZE_MATRIX + indexWarp] = 0;
+                        filterMatrix[indexWarp * SIZE_MATRIX + i] = 0;
                 }
         }
         __syncthreads();
-
-        // cargar en matriz data
-        nvcuda::wmma::load_matrix_sync(data, localMatrix, 16);
-        // cargar en matriz mask
-        nvcuda::wmma::load_matrix_sync(mask, filter, 16);
-        // inicializar resultados a cero
-        nvcuda::wmma::fill_fragment(result, 0.0f);
-
-        // ejecutar codigo en tensor
-        nvcuda::wmma::mma_sync(result, data, mask, result);
-        __syncthreads();
-        // almacenar resultados de vuelta en la memoria compartida
         if (indexWarp == 0) {
+                // cargar en matriz data
+                nvcuda::wmma::load_matrix_sync(data, localMatrix, 16);
+                // cargar en matriz mask
+                nvcuda::wmma::load_matrix_sync(mask, filter, 16);
+                // inicializar resultados a cero
+                nvcuda::wmma::fill_fragment(result, 0.0f);
+
+                // ejecutar codigo en tensor
+                nvcuda::wmma::mma_sync(result, data, mask, result);
+                __syncthreads();
+                // almacenar resultados de vuelta en la memoria compartida
                 for (int i = 0; i < SIZE_MATRIX; i++) {
                         for (int j = 0; j < SIZE_MATRIX; j++) {
-                                localMatrix[i * SIZE_MATRIX + j] = (half) 0.0;
+                                localMatrix[i * SIZE_MATRIX + j] = 0.0;
                         }
                 }
+
+                nvcuda::wmma::store_matrix_sync(localMatrix, result, 16, nvcuda::wmma::mem_row_major);
+                __syncthreads();
         }
-        __syncthreads();
-        nvcuda::wmma::store_matrix_sync(localMatrix, result, 16, nvcuda::wmma::mem_row_major);
-        __syncthreads();
 
         // almacenar resultados de vuelta en la memoria global
         if (indexWarp < 16) {
@@ -157,7 +156,7 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
                         blurredImage[((y * width + x) * channels) + canal] = static_cast<uint8_t>(__half2uint_rd(localMatrix[indexWarp * 16]));
                 }
         }
-        if (x == 12 && y == 12 && canal == 0) {
+        if (x == 0 && y == 0 && canal == 0) {
                 for (int i = 0; i < SIZE_MATRIX; i++) {
                         printf("%.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f \n", 
                                 __half2float(localMatrix[i * SIZE_MATRIX + 0]), __half2float(localMatrix[i * SIZE_MATRIX + 1]),
