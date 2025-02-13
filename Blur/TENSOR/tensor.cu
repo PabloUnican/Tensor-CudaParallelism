@@ -89,6 +89,7 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
         alignas(128) // debe estar alineado
         __shared__ half localMatrix[SIZE_MATRIX * SIZE_MATRIX]; // 16x16 = 256
         __shared__ half filterMatrix[SIZE_MATRIX * SIZE_MATRIX];
+        __shared__ half resultMatrix[SIZE_MATRIX * SIZE_MATRIX];
 
         //data matrix
         // el indice no excede el numero de pixeles a cargar
@@ -127,46 +128,37 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
                 }
         }
         __syncthreads();
-        if (indexWarp == 0) {
-                // cargar en matriz data
-                nvcuda::wmma::load_matrix_sync(data, localMatrix, 16);
-                // cargar en matriz mask
-                nvcuda::wmma::load_matrix_sync(mask, filter, 16);
-                // inicializar resultados a cero
-                nvcuda::wmma::fill_fragment(result, 0.0f);
+        // cargar en matriz data
+        nvcuda::wmma::load_matrix_sync(data, localMatrix, 16);
+        // cargar en matriz mask
+        nvcuda::wmma::load_matrix_sync(mask, filter, 16);
+        // inicializar resultados a cero
+        nvcuda::wmma::fill_fragment(result, 0.0f);
+        // ejecutar codigo en tensor
+        nvcuda::wmma::mma_sync(result, data, mask, result);
+        __syncthreads();
 
-                // ejecutar codigo en tensor
-                nvcuda::wmma::mma_sync(result, data, mask, result);
-                __syncthreads();
-                // almacenar resultados de vuelta en la memoria compartida
-                for (int i = 0; i < SIZE_MATRIX; i++) {
-                        for (int j = 0; j < SIZE_MATRIX; j++) {
-                                localMatrix[i * SIZE_MATRIX + j] = 0.0;
-                        }
-                }
-
-                nvcuda::wmma::store_matrix_sync(localMatrix, result, 16, nvcuda::wmma::mem_row_major);
-                __syncthreads();
-        }
+        nvcuda::wmma::store_matrix_sync(resultMatrix, result, 16, nvcuda::wmma::mem_row_major);
+        __syncthreads();
 
         // almacenar resultados de vuelta en la memoria global
         if (indexWarp < 16) {
                 // Iterar por el array
                 for (int dataX = 0; dataX < filterWidth; dataX++) {
-                        blurredImage[((y * width + x) * channels) + canal] = static_cast<uint8_t>(__half2uint_rd(localMatrix[indexWarp * 16]));
+                        blurredImage[((y * width + x) * channels) + canal] = static_cast<uint8_t>(__half2uint_rd(resultMatrix[indexWarp * 16]));
                 }
         }
         if (x == 0 && y == 0 && canal == 0) {
                 for (int i = 0; i < SIZE_MATRIX; i++) {
                         printf("%.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f \n", 
-                                __half2float(localMatrix[i * SIZE_MATRIX + 0]), __half2float(localMatrix[i * SIZE_MATRIX + 1]),
-                                __half2float(localMatrix[i * SIZE_MATRIX + 2]), __half2float(localMatrix[i * SIZE_MATRIX + 3]),
-                                __half2float(localMatrix[i * SIZE_MATRIX + 4]), __half2float(localMatrix[i * SIZE_MATRIX + 5]),
-                                __half2float(localMatrix[i * SIZE_MATRIX + 6]), __half2float(localMatrix[i * SIZE_MATRIX + 7]),
-                                __half2float(localMatrix[i * SIZE_MATRIX + 8]), __half2float(localMatrix[i * SIZE_MATRIX + 9]),
-                                __half2float(localMatrix[i * SIZE_MATRIX + 10]), __half2float(localMatrix[i * SIZE_MATRIX + 11]),
-                                __half2float(localMatrix[i * SIZE_MATRIX + 12]), __half2float(localMatrix[i * SIZE_MATRIX + 13]),
-                                __half2float(localMatrix[i * SIZE_MATRIX + 14]), __half2float(localMatrix[i * SIZE_MATRIX + 15]));
+                                __half2float(resultMatrix[i * SIZE_MATRIX + 0]), __half2float(resultMatrix[i * SIZE_MATRIX + 1]),
+                                __half2float(resultMatrix[i * SIZE_MATRIX + 2]), __half2float(resultMatrix[i * SIZE_MATRIX + 3]),
+                                __half2float(resultMatrix[i * SIZE_MATRIX + 4]), __half2float(resultMatrix[i * SIZE_MATRIX + 5]),
+                                __half2float(resultMatrix[i * SIZE_MATRIX + 6]), __half2float(resultMatrix[i * SIZE_MATRIX + 7]),
+                                __half2float(resultMatrix[i * SIZE_MATRIX + 8]), __half2float(resultMatrix[i * SIZE_MATRIX + 9]),
+                                __half2float(resultMatrix[i * SIZE_MATRIX + 10]), __half2float(resultMatrix[i * SIZE_MATRIX + 11]),
+                                __half2float(resultMatrix[i * SIZE_MATRIX + 12]), __half2float(resultMatrix[i * SIZE_MATRIX + 13]),
+                                __half2float(resultMatrix[i * SIZE_MATRIX + 14]), __half2float(resultMatrix[i * SIZE_MATRIX + 15]));
                 }
         }
         /*
@@ -221,7 +213,7 @@ int main(int argc, char** argv)
 	half * filter=createFilter(filterWidth);
 
 
-	/*if (argc > 2)
+	if (argc > 2)
 	{
 		imagePath = argv[1];
 		outputPath = argv[2];
@@ -231,10 +223,6 @@ int main(int argc, char** argv)
 		printf("Please provide input and output image files as arguments to this application.\n");
 		exit(1);
 	}
-        */
-       imagePath = "grande.jpg";
-       outputPath = "grande_res.jpg";
-
 
 	//Read the image
 	originalImage = stbi_load(imagePath, &width, &height, &bpp, channels);
