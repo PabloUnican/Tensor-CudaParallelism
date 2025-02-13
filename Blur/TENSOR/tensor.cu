@@ -14,6 +14,7 @@
 #include <iostream>
 
 #define MAX_THREADS_PER_BLOCK 16
+#define SIZE_MATRIX 16
 
 half * createFilter(int width)
 {
@@ -80,18 +81,18 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
 
         // Implementacion TENSOR
         // Definir estructura matrices
-        nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, half, nvcuda::wmma::row_major> data;
-        nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, half, nvcuda::wmma::col_major> mask;
+        nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, half, nvcuda::wmma::col_major> data;
+        nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, half, nvcuda::wmma::row_major> mask;
         nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, half> result;
 
         // mapear matriz "a" (cada fila = vecinos de un pixel)
         alignas(128) // debe estar alineado
-        __shared__ half localMatrix[256]; // 16x16 = 256
-        __shared__ half filterMatrix[256];
+        __shared__ half localMatrix[SIZE_MATRIX * SIZE_MATRIX]; // 16x16 = 256
+        __shared__ half filterMatrix[SIZE_MATRIX * SIZE_MATRIX];
 
         //data matrix
         // el indice no excede el numero de pixeles a cargar
-        if (indexWarp < 16) {
+        if (indexWarp < SIZE_MATRIX) {
                 int neighbour = 0;
                 // Iterar por pixeles vecinos
                 for (int dataY = -halfFilterWidth; dataY <= halfFilterWidth; dataY++) {
@@ -101,30 +102,28 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
                                 int imageX = min(max(x + dataX, 0), width - 1);
                                 int imageY = min(max(y + dataY, 0), height - 1);
                                 //agregar vecino a matriz
-                                localMatrix[indexWarp * 16 + neighbour] = (half) rawImage[((imageY * width + imageX) * channels) + canal];
+                                localMatrix[indexWarp * SIZE_MATRIX + neighbour] = (half) rawImage[((imageY * width + imageX) * channels) + canal];
                                 neighbour++;
                         }
                 }
-                for (int i = neighbour; i < 16; i++) {
-                        localMatrix[indexWarp * 16 + i] = 0;
+                for (int i = neighbour; i < SIZE_MATRIX; i++) {
+                        localMatrix[indexWarp * SIZE_MATRIX + i] = 0;
                 }
         }
         
         // filter matrix
-        if (indexWarp < filterWidth) {
-                // Iterar por pixeles vecinos
-                for (int filterX = 0; filterX < filterWidth; filterX++) {
-                                
-                        //agregar valor del filtro a matriz
-                        filterMatrix[indexWarp * 16 + filterX] = filter[indexWarp * filterWidth + filterX];
-                }
-                for (int i = filterWidth; i < 16; i++) {
-                        filterMatrix[indexWarp * 16 + i] = 0;
-                }
+        if (indexWarp < filterWidth * filterWidth) {         
+                //agregar valor del filtro a matriz
+                filterMatrix[indexWarp * SIZE_MATRIX] = filter[indexWarp];
         }
-        else if (indexWarp < 16) {
-                for (int i = 0; i < 16; i++) {
-                        filterMatrix[indexWarp * 16 + i] = 0;
+        //rellenar fila con 0
+        else if (indexWarp < SIZE_MATRIX) {
+                filterMatrix[indexWarp * SIZE_MATRIX] = 0;
+        }
+        // rellenar resto de matriz con 0
+        if (indexWarp >= 1 && indexWarp < SIZE_MATRIX) {
+                for (int i = 0; i < SIZE_MATRIX; i++) {
+                        filterMatrix[i * SIZE_MATRIX + indexWarp] = 0;
                 }
         }
         __syncthreads();
@@ -140,6 +139,14 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
         nvcuda::wmma::mma_sync(result, data, mask, result);
         __syncthreads();
         // almacenar resultados de vuelta en la memoria compartida
+        if (indexWarp == 0) {
+                for (int i = 0; i < SIZE_MATRIX; i++) {
+                        for (int j = 0; j < SIZE_MATRIX; j++) {
+                                localMatrix[i * SIZE_MATRIX + j] = (half) 0.0;
+                        }
+                }
+        }
+        __syncthreads();
         nvcuda::wmma::store_matrix_sync(localMatrix, result, 16, nvcuda::wmma::mem_row_major);
         __syncthreads();
 
@@ -148,6 +155,19 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
                 // Iterar por el array
                 for (int dataX = 0; dataX < filterWidth; dataX++) {
                         blurredImage[((y * width + x) * channels) + canal] = static_cast<uint8_t>(__half2uint_rd(localMatrix[indexWarp * 16]));
+                }
+        }
+        if (x == 12 && y == 12 && canal == 0) {
+                for (int i = 0; i < SIZE_MATRIX; i++) {
+                        printf("%.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f \n", 
+                                __half2float(localMatrix[i * SIZE_MATRIX + 0]), __half2float(localMatrix[i * SIZE_MATRIX + 1]),
+                                __half2float(localMatrix[i * SIZE_MATRIX + 2]), __half2float(localMatrix[i * SIZE_MATRIX + 3]),
+                                __half2float(localMatrix[i * SIZE_MATRIX + 4]), __half2float(localMatrix[i * SIZE_MATRIX + 5]),
+                                __half2float(localMatrix[i * SIZE_MATRIX + 6]), __half2float(localMatrix[i * SIZE_MATRIX + 7]),
+                                __half2float(localMatrix[i * SIZE_MATRIX + 8]), __half2float(localMatrix[i * SIZE_MATRIX + 9]),
+                                __half2float(localMatrix[i * SIZE_MATRIX + 10]), __half2float(localMatrix[i * SIZE_MATRIX + 11]),
+                                __half2float(localMatrix[i * SIZE_MATRIX + 12]), __half2float(localMatrix[i * SIZE_MATRIX + 13]),
+                                __half2float(localMatrix[i * SIZE_MATRIX + 14]), __half2float(localMatrix[i * SIZE_MATRIX + 15]));
                 }
         }
         /*
