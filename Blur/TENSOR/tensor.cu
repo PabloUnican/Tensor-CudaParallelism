@@ -13,7 +13,7 @@
 #include <cuda_fp16.h>
 #include <iostream>
 
-#define MAX_THREADS_PER_BLOCK 16
+#define MAX_THREADS_PER_BLOCK 32
 #define SIZE_MATRIX 16
 
 half * createFilter(int width)
@@ -60,22 +60,23 @@ half * createFilter(int width)
 /*
 Kernel de CUDA para realizar el desenfoque gaussiano
 Estructura unidimensional de bloques (x para posicion)
-Estructura unidimensional de threads (x para posicion y canal)
+Estructura bidimensional de threads (x para posicion y canal)
 */ 
 __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* const rawImage, int width, int height, int channels, const half* filter, int filterWidth)
-{
+{        
         // Calcular la posicion del thread en la imagen
         int temp = blockIdx.x * blockDim.x + threadIdx.x;
         int x = (temp / channels) % width;
         int y = (temp / channels) / width;
         int canal = temp % channels;
+        // const int warpId = temp / warpSize; // obtener el ID del warp
+        const int indexWarp = (threadIdx.x % (warpSize)); // obtener el índice del hilo dentro del warp
+
 
         // Comprobar thread util
         if (x >= width || y >= height || canal >= channels){return;}
 
-        // const int warpId = temp / warpSize; // obtener el ID del warp
-        const int indexWarp = (threadIdx.x % (warpSize)); // obtener el índice del hilo dentro del warp
-
+        
         // mitad ancho del filtro
         int halfFilterWidth = filterWidth / 2;
 
@@ -83,13 +84,15 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
         // Definir estructura matrices
         nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, half, nvcuda::wmma::row_major> data;
         nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, half, nvcuda::wmma::col_major> mask;
-        nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, half> result;
+        nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, float> result;
+        // inicializar resultados a cero
+        nvcuda::wmma::fill_fragment(result, 0.0f);
 
         // mapear matriz "a" (cada fila = vecinos de un pixel)
         alignas(128) // debe estar alineado
         __shared__ half localMatrix[SIZE_MATRIX * SIZE_MATRIX]; // 16x16 = 256
         __shared__ half filterMatrix[SIZE_MATRIX * SIZE_MATRIX];
-        __shared__ half resultMatrix[SIZE_MATRIX * SIZE_MATRIX];
+        __shared__ float resultMatrix[SIZE_MATRIX * SIZE_MATRIX];
 
         //data matrix
         // el indice no excede el numero de pixeles a cargar
@@ -131,34 +134,31 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
         // cargar en matriz data
         nvcuda::wmma::load_matrix_sync(data, localMatrix, 16);
         // cargar en matriz mask
-        nvcuda::wmma::load_matrix_sync(mask, filter, 16);
-        // inicializar resultados a cero
-        nvcuda::wmma::fill_fragment(result, 0.0f);
+        nvcuda::wmma::load_matrix_sync(mask, filterMatrix, 16);
         // ejecutar codigo en tensor
+        __syncthreads();
         nvcuda::wmma::mma_sync(result, data, mask, result);
         __syncthreads();
-
         nvcuda::wmma::store_matrix_sync(resultMatrix, result, 16, nvcuda::wmma::mem_row_major);
         __syncthreads();
-
         // almacenar resultados de vuelta en la memoria global
         if (indexWarp < 16) {
                 // Iterar por el array
                 for (int dataX = 0; dataX < filterWidth; dataX++) {
-                        blurredImage[((y * width + x) * channels) + canal] = static_cast<uint8_t>(__half2uint_rd(resultMatrix[indexWarp * 16]));
+                        blurredImage[((y * width + x) * channels) + canal] = (uint8_t) resultMatrix[indexWarp * 16];
                 }
         }
         if (x == 0 && y == 0 && canal == 0) {
                 for (int i = 0; i < SIZE_MATRIX; i++) {
                         printf("%.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f \n", 
-                                __half2float(resultMatrix[i * SIZE_MATRIX + 0]), __half2float(resultMatrix[i * SIZE_MATRIX + 1]),
-                                __half2float(resultMatrix[i * SIZE_MATRIX + 2]), __half2float(resultMatrix[i * SIZE_MATRIX + 3]),
-                                __half2float(resultMatrix[i * SIZE_MATRIX + 4]), __half2float(resultMatrix[i * SIZE_MATRIX + 5]),
-                                __half2float(resultMatrix[i * SIZE_MATRIX + 6]), __half2float(resultMatrix[i * SIZE_MATRIX + 7]),
-                                __half2float(resultMatrix[i * SIZE_MATRIX + 8]), __half2float(resultMatrix[i * SIZE_MATRIX + 9]),
-                                __half2float(resultMatrix[i * SIZE_MATRIX + 10]), __half2float(resultMatrix[i * SIZE_MATRIX + 11]),
-                                __half2float(resultMatrix[i * SIZE_MATRIX + 12]), __half2float(resultMatrix[i * SIZE_MATRIX + 13]),
-                                __half2float(resultMatrix[i * SIZE_MATRIX + 14]), __half2float(resultMatrix[i * SIZE_MATRIX + 15]));
+                                resultMatrix[i * SIZE_MATRIX + 0], resultMatrix[i * SIZE_MATRIX + 1],
+                                resultMatrix[i * SIZE_MATRIX + 2], resultMatrix[i * SIZE_MATRIX + 3],
+                                resultMatrix[i * SIZE_MATRIX + 4], resultMatrix[i * SIZE_MATRIX + 5],
+                                resultMatrix[i * SIZE_MATRIX + 6], resultMatrix[i * SIZE_MATRIX + 7],
+                                resultMatrix[i * SIZE_MATRIX + 8], resultMatrix[i * SIZE_MATRIX + 9],
+                                resultMatrix[i * SIZE_MATRIX + 10], resultMatrix[i * SIZE_MATRIX + 11],
+                                resultMatrix[i * SIZE_MATRIX + 12], resultMatrix[i * SIZE_MATRIX + 13],
+                                resultMatrix[i * SIZE_MATRIX + 14], resultMatrix[i * SIZE_MATRIX + 15]);
                 }
         }
         /*
