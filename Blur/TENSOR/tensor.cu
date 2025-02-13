@@ -13,7 +13,7 @@
 #include <cuda_fp16.h>
 #include <iostream>
 
-#define MAX_THREADS_PER_BLOCK 128
+#define MAX_THREADS_PER_BLOCK 16
 
 half * createFilter(int width)
 {
@@ -50,7 +50,7 @@ half * createFilter(int width)
                 {
                         int idx = (r + middle) * width + c + middle;
 
-                        res[idx] *= (half) normal;
+                        res[idx] = __float2half(normal);
                 }
         }
         return res;
@@ -59,26 +59,24 @@ half * createFilter(int width)
 /*
 Kernel de CUDA para realizar el desenfoque gaussiano
 Estructura unidimensional de bloques (x para posicion)
-Estructura bidimensional de threads (x para posicion, y para canal)
+Estructura unidimensional de threads (x para posicion y canal)
 */ 
 __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* const rawImage, int width, int height, int channels, const half* filter, int filterWidth)
 {
         // Calcular la posicion del thread en la imagen
         int temp = blockIdx.x * blockDim.x + threadIdx.x;
-        int x = temp % width;
-        int y = temp / width;
-        int canal = threadIdx.y;
+        int x = (temp / channels) % width;
+        int y = (temp / channels) / width;
+        int canal = temp % channels;
 
         // Comprobar thread util
         if (x >= width || y >= height || canal >= channels){return;}
 
-        const int warpId = temp / warpSize; // obtener el ID del warp
+        // const int warpId = temp / warpSize; // obtener el ID del warp
         const int indexWarp = (threadIdx.x % (warpSize)); // obtener el índice del hilo dentro del warp
 
         // mitad ancho del filtro
         int halfFilterWidth = filterWidth / 2;
-        // pixel desenfocado
-        float blurredPixel = 0;
 
         // Implementacion TENSOR
         // Definir estructura matrices
@@ -149,12 +147,14 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
         if (indexWarp < 16) {
                 // Iterar por el array
                 for (int dataX = 0; dataX < filterWidth; dataX++) {
-                        blurredImage[((y * width + x) * channels) + canal] = localMatrix[indexWarp * 16];
+                        blurredImage[((y * width + x) * channels) + canal] = static_cast<uint8_t>(__half2uint_rd(localMatrix[indexWarp * 16]));
                 }
         }
         /*
         
         //Implementacion CUDA
+        // pixel desenfocado
+        float blurredPixel = 0;
         // Calcular el pixel desenfocado
         for (int filterY = -halfFilterWidth; filterY <= halfFilterWidth; filterY++) {
                 for (int filterX = -halfFilterWidth; filterX <= halfFilterWidth; filterX++) {
@@ -245,11 +245,11 @@ int main(int argc, char** argv)
         cudaMemcpy(d_filter, filter, filterWidth * filterWidth * sizeof(half), cudaMemcpyHostToDevice);
 
         //procedimiento
-        dim3 blockDim(MAX_THREADS_PER_BLOCK / channels, channels);
+        dim3 blockDim(MAX_THREADS_PER_BLOCK);
         dim3 gridDim((width * height) / (MAX_THREADS_PER_BLOCK / channels) + 1);
         GaussianBlurOnCUDA<<<gridDim, blockDim>>>(d_blurredImage, d_originalImage, width, height, channels, d_filter, filterWidth);
 
-        cudaThreadSynchronize();
+        cudaDeviceSynchronize();
 
         // Copiar la imagen final desde la memoria de la GPU a la memoria del host
         cudaMemcpy(blurredImage, d_blurredImage, width * height * channels * sizeof(uint8_t), cudaMemcpyDeviceToHost);
