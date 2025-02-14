@@ -37,7 +37,7 @@ half * createFilter(int width)
                         float weight = expf(-static_cast<float>(c * c + r * r) / (2.f * sigma * sigma));
                         int idx = (r + middle) * width + c + middle;
 
-                        res[idx] = (half) weight;
+                        res[idx] = __float2half(weight);
                         sum += weight;
                 }
         }
@@ -51,7 +51,8 @@ half * createFilter(int width)
                 {
                         int idx = (r + middle) * width + c + middle;
 
-                        res[idx] = __float2half(normal);
+                        //res[idx] = __float2half(normal);
+                        res[idx] = 0.1111;
                 }
         }
         return res;
@@ -66,25 +67,22 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
 {        
         // Calcular la posicion del thread en la imagen
         int temp = blockIdx.x * blockDim.x + threadIdx.x;
+        int warpId = temp / warpSize; // obtener el ID del warp
+        int indexWarp = (threadIdx.x % (warpSize)); // obtener el índice del hilo dentro del warp
+        temp = warpId * SIZE_MATRIX + indexWarp;
         int x = (temp / channels) % width;
         int y = (temp / channels) / width;
         int canal = temp % channels;
-        // const int warpId = temp / warpSize; // obtener el ID del warp
-        const int indexWarp = (threadIdx.x % (warpSize)); // obtener el índice del hilo dentro del warp
-
 
         // Comprobar thread util
         if (x >= width || y >= height || canal >= channels){return;}
-
-        
         // mitad ancho del filtro
         int halfFilterWidth = filterWidth / 2;
-
         // Implementacion TENSOR
         // Definir estructura matrices
-        nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, 16, 16, 16, half, nvcuda::wmma::row_major> data;
-        nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, 16, 16, 16, half, nvcuda::wmma::col_major> mask;
-        nvcuda::wmma::fragment<nvcuda::wmma::accumulator, 16, 16, 16, float> result;
+        nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, SIZE_MATRIX, SIZE_MATRIX, SIZE_MATRIX, half, nvcuda::wmma::row_major> data;
+        nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, SIZE_MATRIX, SIZE_MATRIX, SIZE_MATRIX, half, nvcuda::wmma::col_major> mask;
+        nvcuda::wmma::fragment<nvcuda::wmma::accumulator, SIZE_MATRIX, SIZE_MATRIX, SIZE_MATRIX, float> result;
         // inicializar resultados a cero
         nvcuda::wmma::fill_fragment(result, 0.0f);
 
@@ -106,7 +104,8 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
                                 int imageX = min(max(x + dataX, 0), width - 1);
                                 int imageY = min(max(y + dataY, 0), height - 1);
                                 //agregar vecino a matriz
-                                localMatrix[indexWarp * SIZE_MATRIX + neighbour] = (half) rawImage[((imageY * width + imageX) * channels) + canal];
+                                localMatrix[indexWarp * SIZE_MATRIX + neighbour] = 
+                                        (half) rawImage[((imageY * width + imageX) * channels) + canal];
                                 neighbour++;
                         }
                 }
@@ -139,27 +138,29 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
         __syncthreads();
         nvcuda::wmma::mma_sync(result, data, mask, result);
         __syncthreads();
-        nvcuda::wmma::store_matrix_sync(resultMatrix, result, 16, nvcuda::wmma::mem_row_major);
+        nvcuda::wmma::store_matrix_sync(resultMatrix, result, 16, nvcuda::wmma::mem_col_major);
         __syncthreads();
         // almacenar resultados de vuelta en la memoria global
         if (indexWarp < 16) {
-                // Iterar por el array
-                for (int dataX = 0; dataX < filterWidth; dataX++) {
-                        blurredImage[((y * width + x) * channels) + canal] = (uint8_t) resultMatrix[indexWarp * 16];
-                }
+                blurredImage[((y * width + x) * channels) + canal] = (uint8_t) resultMatrix[indexWarp];
         }
-        if (x == 0 && y == 0 && canal == 0) {
-                for (int i = 0; i < SIZE_MATRIX; i++) {
+        if (x == 12 && y == 12 && canal == 0) {
                         printf("%.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f \n", 
-                                resultMatrix[i * SIZE_MATRIX + 0], resultMatrix[i * SIZE_MATRIX + 1],
-                                resultMatrix[i * SIZE_MATRIX + 2], resultMatrix[i * SIZE_MATRIX + 3],
-                                resultMatrix[i * SIZE_MATRIX + 4], resultMatrix[i * SIZE_MATRIX + 5],
-                                resultMatrix[i * SIZE_MATRIX + 6], resultMatrix[i * SIZE_MATRIX + 7],
-                                resultMatrix[i * SIZE_MATRIX + 8], resultMatrix[i * SIZE_MATRIX + 9],
-                                resultMatrix[i * SIZE_MATRIX + 10], resultMatrix[i * SIZE_MATRIX + 11],
-                                resultMatrix[i * SIZE_MATRIX + 12], resultMatrix[i * SIZE_MATRIX + 13],
-                                resultMatrix[i * SIZE_MATRIX + 14], resultMatrix[i * SIZE_MATRIX + 15]);
-                }
+                                resultMatrix[0], resultMatrix[1], resultMatrix[2], resultMatrix[3], resultMatrix[4], resultMatrix[5],
+                                resultMatrix[6], resultMatrix[7], resultMatrix[8], resultMatrix[9], resultMatrix[10], resultMatrix[11],
+                                resultMatrix[12], resultMatrix[13], resultMatrix[14], resultMatrix[15]);
+        }
+        if (x == 12 && y == 12 && canal == 0) {
+                printf("%.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f \n", 
+                        __half2float(filterMatrix[0]), __half2float(filterMatrix[1]), __half2float(filterMatrix[2]), __half2float(filterMatrix[3]), __half2float(filterMatrix[4]), __half2float(filterMatrix[5]),
+                        __half2float(filterMatrix[6]), __half2float(filterMatrix[7]), __half2float(filterMatrix[8]), __half2float(filterMatrix[9]), __half2float(filterMatrix[10]), __half2float(filterMatrix[11]),
+                        __half2float(filterMatrix[12]), __half2float(filterMatrix[13]), __half2float(filterMatrix[14]), __half2float(filterMatrix[15]));
+        }
+        if (x == 12 && y == 12 && canal == 0) {
+                printf("%.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f \n", 
+                        __half2float(localMatrix[3 * SIZE_MATRIX + 0]), __half2float(localMatrix[3 * SIZE_MATRIX + 1]), __half2float(localMatrix[3 * SIZE_MATRIX + 2]), __half2float(localMatrix[3 * SIZE_MATRIX + 3]), __half2float(localMatrix[3 * SIZE_MATRIX + 4]), __half2float(localMatrix[3 * SIZE_MATRIX + 5]),
+                        __half2float(localMatrix[3 * SIZE_MATRIX + 6]), __half2float(localMatrix[3 * SIZE_MATRIX + 7]), __half2float(localMatrix[3 * SIZE_MATRIX + 8]), __half2float(localMatrix[3 * SIZE_MATRIX + 9]), __half2float(localMatrix[3 * SIZE_MATRIX + 10]), __half2float(localMatrix[3 * SIZE_MATRIX + 11]),
+                        __half2float(localMatrix[3 * SIZE_MATRIX + 12]), __half2float(localMatrix[3 * SIZE_MATRIX + 13]), __half2float(localMatrix[3 * SIZE_MATRIX + 14]), __half2float(localMatrix[3 * SIZE_MATRIX + 15]));
         }
         /*
         
@@ -212,7 +213,6 @@ int main(int argc, char** argv)
 	int filterWidth=3;
 	half * filter=createFilter(filterWidth);
 
-
 	if (argc > 2)
 	{
 		imagePath = argv[1];
@@ -252,7 +252,7 @@ int main(int argc, char** argv)
         cudaMemcpy(d_filter, filter, filterWidth * filterWidth * sizeof(half), cudaMemcpyHostToDevice);
 
         //procedimiento
-        dim3 blockDim(MAX_THREADS_PER_BLOCK);
+        dim3 blockDim(MAX_THREADS_PER_BLOCK * 2); //actualmente solo usamos la mitad del warp
         dim3 gridDim((width * height) / (MAX_THREADS_PER_BLOCK / channels) + 1);
         GaussianBlurOnCUDA<<<gridDim, blockDim>>>(d_blurredImage, d_originalImage, width, height, channels, d_filter, filterWidth);
 
