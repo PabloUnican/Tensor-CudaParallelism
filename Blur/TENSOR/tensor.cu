@@ -129,38 +129,17 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
                         filterMatrix[indexWarp * SIZE_MATRIX + i] = 0;
                 }
         }
-        __syncthreads();
+        __syncwarp();
         // cargar en matriz data
         nvcuda::wmma::load_matrix_sync(data, localMatrix, 16);
         // cargar en matriz mask
         nvcuda::wmma::load_matrix_sync(mask, filterMatrix, 16);
         // ejecutar codigo en tensor
-        __syncthreads();
         nvcuda::wmma::mma_sync(result, data, mask, result);
-        __syncthreads();
         nvcuda::wmma::store_matrix_sync(resultMatrix, result, 16, nvcuda::wmma::mem_col_major);
-        __syncthreads();
         // almacenar resultados de vuelta en la memoria global
         if (indexWarp < 16) {
                 blurredImage[((y * width + x) * channels) + canal] = (uint8_t) resultMatrix[indexWarp];
-        }
-        if (x == 12 && y == 12 && canal == 0) {
-                        printf("%.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f \n", 
-                                resultMatrix[0], resultMatrix[1], resultMatrix[2], resultMatrix[3], resultMatrix[4], resultMatrix[5],
-                                resultMatrix[6], resultMatrix[7], resultMatrix[8], resultMatrix[9], resultMatrix[10], resultMatrix[11],
-                                resultMatrix[12], resultMatrix[13], resultMatrix[14], resultMatrix[15]);
-        }
-        if (x == 12 && y == 12 && canal == 0) {
-                printf("%.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f \n", 
-                        __half2float(filterMatrix[0]), __half2float(filterMatrix[1]), __half2float(filterMatrix[2]), __half2float(filterMatrix[3]), __half2float(filterMatrix[4]), __half2float(filterMatrix[5]),
-                        __half2float(filterMatrix[6]), __half2float(filterMatrix[7]), __half2float(filterMatrix[8]), __half2float(filterMatrix[9]), __half2float(filterMatrix[10]), __half2float(filterMatrix[11]),
-                        __half2float(filterMatrix[12]), __half2float(filterMatrix[13]), __half2float(filterMatrix[14]), __half2float(filterMatrix[15]));
-        }
-        if (x == 12 && y == 12 && canal == 0) {
-                printf("%.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f %.2f \n", 
-                        __half2float(localMatrix[3 * SIZE_MATRIX + 0]), __half2float(localMatrix[3 * SIZE_MATRIX + 1]), __half2float(localMatrix[3 * SIZE_MATRIX + 2]), __half2float(localMatrix[3 * SIZE_MATRIX + 3]), __half2float(localMatrix[3 * SIZE_MATRIX + 4]), __half2float(localMatrix[3 * SIZE_MATRIX + 5]),
-                        __half2float(localMatrix[3 * SIZE_MATRIX + 6]), __half2float(localMatrix[3 * SIZE_MATRIX + 7]), __half2float(localMatrix[3 * SIZE_MATRIX + 8]), __half2float(localMatrix[3 * SIZE_MATRIX + 9]), __half2float(localMatrix[3 * SIZE_MATRIX + 10]), __half2float(localMatrix[3 * SIZE_MATRIX + 11]),
-                        __half2float(localMatrix[3 * SIZE_MATRIX + 12]), __half2float(localMatrix[3 * SIZE_MATRIX + 13]), __half2float(localMatrix[3 * SIZE_MATRIX + 14]), __half2float(localMatrix[3 * SIZE_MATRIX + 15]));
         }
         /*
         
@@ -252,8 +231,8 @@ int main(int argc, char** argv)
         cudaMemcpy(d_filter, filter, filterWidth * filterWidth * sizeof(half), cudaMemcpyHostToDevice);
 
         //procedimiento
-        dim3 blockDim(MAX_THREADS_PER_BLOCK * 2); //actualmente solo usamos la mitad del warp
-        dim3 gridDim((width * height) / (MAX_THREADS_PER_BLOCK / channels) + 1);
+        dim3 blockDim(MAX_THREADS_PER_BLOCK);
+        dim3 gridDim((width * height) / ((MAX_THREADS_PER_BLOCK / 2) / channels) + 1);
         GaussianBlurOnCUDA<<<gridDim, blockDim>>>(d_blurredImage, d_originalImage, width, height, channels, d_filter, filterWidth);
 
         cudaDeviceSynchronize();
