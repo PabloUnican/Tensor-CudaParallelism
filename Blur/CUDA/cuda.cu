@@ -35,16 +35,12 @@ float * createFilter(int width)
         }
 
         // Normalize weight: sum of weights must equal 1
-        float normal = 1.f / sum;
-
-        for (int r = -half; r <= half; ++r)
-        {
-                for (int c = -half; c <= half; ++c)
-                {
-                        int idx = (r + half) * width + c + half;
-
-                        res[idx] *= normal;
-                }
+        float normal = 0.f;
+        for (int i = 0; i < width * width; i++) {
+                normal += res[i];
+        }
+        for (int i = 0; i < width * width; i++) {
+                res[i] = res[i] / (normal);
         }
         return res;
 }
@@ -111,7 +107,7 @@ int main(int argc, char** argv)
 	int height, width, bpp, channels=4;
 	uint8_t * originalImage, * blurredImage;
 
-	int filterWidth=9;
+	int filterWidth=11;
 	float * filter=createFilter(filterWidth);
 
 
@@ -160,7 +156,7 @@ int main(int argc, char** argv)
         dim3 gridDim((width * height) / (MAX_THREADS_PER_BLOCK / channels) + 1);
         GaussianBlurOnCUDA<<<gridDim, blockDim>>>(d_blurredImage, d_originalImage, width, height, channels, d_filter, filterWidth);
 
-        cudaThreadSynchronize();
+        cudaDeviceSynchronize();
 
         // Copiar la imagen final desde la memoria de la GPU a la memoria del host
         cudaMemcpy(blurredImage, d_blurredImage, width * height * channels * sizeof(uint8_t), cudaMemcpyDeviceToHost);

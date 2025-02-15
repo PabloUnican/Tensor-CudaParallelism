@@ -15,8 +15,8 @@
 
 #define MAX_THREADS_PER_BLOCK 32
 
-#define WMMA_M 16
-#define WMMA_N 16
+#define WMMA_M 32
+#define WMMA_N 8
 #define WMMA_K 16
 
 half * createFilter(int width)
@@ -28,6 +28,7 @@ half * createFilter(int width)
 
 
         // Create convolution matrix
+        float * aux = (float *)malloc(width*width*sizeof(float));
         half * res=(half *)malloc(width*width*sizeof(half));
 
 
@@ -40,24 +41,20 @@ half * createFilter(int width)
                         float weight = expf(-static_cast<float>(c * c + r * r) / (2.f * sigma * sigma));
                         int idx = (r + middle) * width + c + middle;
 
-                        res[idx] = __float2half(weight);
+                        aux[idx] = weight;
                         sum += weight;
                 }
         }
 
         // Normalize weight: sum of weights must equal 1
-        float normal = 1.f / sum;
-
-        for (int r = -middle; r <= middle; ++r)
-        {
-                for (int c = -middle; c <= middle; ++c)
-                {
-                        int idx = (r + middle) * width + c + middle;
-
-                        //res[idx] = __float2half(normal);
-                        res[idx] = 0.04;
-                }
+        float normal = 0.f;
+        for (int i = 0; i < width * width; i++) {
+                normal += (aux[i]);
         }
+        for (int i = 0; i < width * width; i++) {
+                res[i] = __float2half(aux[i] / (normal));
+        }
+
         return res;
 }
 
@@ -110,14 +107,13 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
         int pendingValues = filterSize;
         // Iterar por bloques en tamanho de warp
         for (int i = 0; i < filterSize; i+= WMMA_N) {
-
         //data matrix
         // el indice no excede el numero de pixeles a cargar
         if (indexWarp < WMMA_M) {
-                int neighbour = 0;
+                int temp = 0;
 
                 //iterar por todas las posiciones que se pueden cargar en la matriz
-                for (int temp = 0; temp < min(WMMA_N, pendingValues); temp++) {
+                for (temp = 0; temp < min(WMMA_N, pendingValues); temp++) {
                         //comprobacion de limites
                         int filterX = ((temp + i) % filterWidth);
                         int filterY = ((temp + i) / filterWidth);
@@ -125,26 +121,26 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
                         int imageX = min(max(x + filterX - halfFilterWidth, 0), width - 1);
                         int imageY = min(max(y + filterY - halfFilterWidth, 0), height - 1);
 
-                        //agregar coeficiente en el filtro
-                        filterMatrix[indexWarp] = filter[indexWarp + i];
-
                         //agregar vecino a matriz
                         localMatrix[indexWarp * WMMA_N + temp] = 
                                 (half) rawImage[((imageY * width + imageX) * channels) + canal];
-                        neighbour++;
                 }
                 //rellenar con 0 en caso de necesitarlo
-                for (int j = neighbour; j < WMMA_N; j++) {
+                for (int j = temp; j < WMMA_N; j++) {
                         localMatrix[indexWarp * WMMA_N + j] = 0;
                         filterMatrix[j] = 0;
                 }
+        }
+        //agregar coeficiente en el filtro
+        if (indexWarp < WMMA_N) {
+                filterMatrix[indexWarp] = filter[indexWarp + i];
         }
         __syncwarp();
 
         // cargar en matriz data
         nvcuda::wmma::load_matrix_sync(data, localMatrix, WMMA_N);
         // cargar en matriz mask
-        nvcuda::wmma::load_matrix_sync(mask, filterMatrix, WMMA_K);
+        nvcuda::wmma::load_matrix_sync(mask, filterMatrix, WMMA_N);
         // ejecutar codigo en tensor
         nvcuda::wmma::mma_sync(result, data, mask, result);
 
@@ -206,7 +202,7 @@ int main(int argc, char** argv)
 	int height, width, bpp, channels=4;
 	uint8_t * originalImage, * blurredImage;
 
-	int filterWidth=5;
+	int filterWidth=3;
 	half * filter=createFilter(filterWidth);
 
 	if (argc > 2)
@@ -231,9 +227,6 @@ int main(int argc, char** argv)
 	blurredImage=(uint8_t *)malloc(width*height*channels*sizeof(uint8_t));
 	printf("Width:%d, Height:%d Size(in Bytes):%lu\n", width, height, (long unsigned int) width*height*bpp*channels);
 
-	//Tu práctica empieza aquí
-	//CUDA
-
         // Definir punteros para la memoria de la GPU
         uint8_t *d_originalImage, *d_blurredImage;
         half *d_filter;
@@ -249,7 +242,7 @@ int main(int argc, char** argv)
 
         //procedimiento
         dim3 blockDim(MAX_THREADS_PER_BLOCK);
-        dim3 gridDim((width * height) / ((MAX_THREADS_PER_BLOCK / 2) / channels) + 1);
+        dim3 gridDim((width * height) / ((MAX_THREADS_PER_BLOCK) / channels) + 1);
         GaussianBlurOnCUDA<<<gridDim, blockDim>>>(d_blurredImage, d_originalImage, width, height, channels, d_filter, filterWidth);
 
         cudaDeviceSynchronize();
