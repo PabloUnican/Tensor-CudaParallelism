@@ -158,7 +158,33 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
         // almacenar resultados de vuelta en la memoria global
         if (indexWarp < WMMA_M) {
                 blurredImage[((y * width + x) * channels) + canal] = (uint8_t) resultMatrix[indexWarp + offsetResultMatrix];
-        }        
+        }
+
+        /*
+        
+        //Implementacion CUDA
+        // pixel desenfocado
+        float blurredPixel = 0;
+        // Calcular el pixel desenfocado
+        for (int filterY = -halfFilterWidth; filterY <= halfFilterWidth; filterY++) {
+                for (int filterX = -halfFilterWidth; filterX <= halfFilterWidth; filterX++) {
+                        
+                        //comprobacion de limites
+                        int imageX = min(max(x + filterX, 0), width - 1);
+                        int imageY = min(max(y + filterY, 0), height - 1);
+
+                        // Calcular el indice del filtro
+                        int filterIndex = (filterY + halfFilterWidth) * filterWidth + (filterX + halfFilterWidth);
+                        
+                        // Pixel de la imagen a tratar
+                        uint8_t pixel = rawImage[((imageY * width + imageX) * channels) + canal];
+                        blurredPixel += ((half)pixel) * filter[filterIndex];
+                }
+        }
+        blurredImage[((y * width + x) * channels) + canal] = (uint8_t)blurredPixel;
+
+        */
+        
 }
 
 // Main entry into the application
