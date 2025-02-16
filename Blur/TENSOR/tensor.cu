@@ -58,10 +58,12 @@ half * createFilter(int width)
         return res;
 }
 
+//shared memory space
+extern __shared__ half sharedMemory[];
 /*
 Kernel de CUDA para realizar el desenfoque gaussiano
 Estructura unidimensional de bloques (x para posicion)
-Estructura bidimensional de threads (x para posicion y canal)
+Estructura unidimensional de threads (x para posicion y canal)
 */ 
 __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* const rawImage, int width, int height, int channels, const half* filter, int filterWidth)
 {        
@@ -103,6 +105,32 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
         __shared__ half localMatrix[WMMA_M * WMMA_N];
         __shared__ half filterMatrix[WMMA_N * WMMA_K];
         __shared__ float resultMatrix[WMMA_M * WMMA_K];
+
+        //matriz intermedia (memoria dinamica)
+        half* middleMatrix = sharedMemory;
+        //rellenar matriz intermedia
+        const int size = (WMMA_M + (filterWidth - 1) * channels);
+        //primera posicion del array
+        int firstPos = ((y * width + x) * channels) - (((y * width + x) * channels) % (WMMA_M));
+        firstPos = firstPos - (halfFilterWidth + halfFilterWidth * width) * channels;
+        int firstPosX = (firstPos / channels) % width;
+        int firstPosY = (firstPos / channels) / width;
+        // iterar por todos los pixeles utilizables
+        for(int i=0; i<filterWidth; i+=warpSize) {
+                int temp = i + indexWarp;
+                if (temp >= filterWidth) {break;}
+                for (int j = 0; j < size; j+= channels) {
+                        int imageX = min(max(firstPosX + j, 0), width - 1);
+                        int imageY = min(max(firstPosY + temp, 0), height - 1);
+                        for (int k = 0; k < channels; k++) {
+                                //cargar pixel en matriz intermedia
+                                //printf("%d, %d, %d\n", temp, j, k);
+                                middleMatrix[(temp * size) + j + k] = 
+                                        (half) rawImage[((imageY * width + imageX) * channels) + k];
+                        }
+                }
+        }
+        __syncwarp();
 
         int pendingValues = filterSize;
         // Iterar por bloques en tamanho de warp
@@ -202,7 +230,7 @@ int main(int argc, char** argv)
 	int height, width, bpp, channels=4;
 	uint8_t * originalImage, * blurredImage;
 
-	int filterWidth=3;
+	int filterWidth=5;
 	half * filter=createFilter(filterWidth);
 
 	if (argc > 2)
@@ -243,7 +271,8 @@ int main(int argc, char** argv)
         //procedimiento
         dim3 blockDim(MAX_THREADS_PER_BLOCK);
         dim3 gridDim((width * height) / ((MAX_THREADS_PER_BLOCK) / channels) + 1);
-        GaussianBlurOnCUDA<<<gridDim, blockDim>>>(d_blurredImage, d_originalImage, width, height, channels, d_filter, filterWidth);
+        size_t sharedMemSize = (WMMA_M + (filterWidth - 1) * channels) * filterWidth * sizeof(half);
+        GaussianBlurOnCUDA<<<gridDim, blockDim, sharedMemSize>>>(d_blurredImage, d_originalImage, width, height, channels, d_filter, filterWidth);
 
         cudaDeviceSynchronize();
 
