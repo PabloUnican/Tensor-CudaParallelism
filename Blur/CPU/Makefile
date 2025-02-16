@@ -7,10 +7,10 @@ NVCC = nvcc
 CFLAGS = -O0 -arch=sm_89
 
 # Target executable
-TARGET = my_cuda_program
+TARGET = cpu
 
 # Source files
-SRCS = TENSOR/tensor.cu
+SRCS = secuencial.cu
 
 # Build the target
 $(TARGET): $(SRCS)

@@ -147,11 +147,21 @@ int main(int argc, char** argv)
 	char * imagePath;
 	char * outputPath;
 	
-	int height, width, bpp, channels=4;
+	int height, width, bpp, channels=4, filterWidth;
 	uchar4 * originalImage, * blurredImage;
 
-	int filterWidth=3;
-	float * filter=createFilter(filterWidth);
+
+	if (argc > 3)
+	{
+		imagePath = argv[1];
+		outputPath = argv[2];
+                filterWidth = atoi(argv[3]);
+	}
+	else
+	{
+		printf("Please provide input and output image files and filter as arguments to this application.\n");
+		exit(1);
+	}
 
         //PRINT TITLE
         printf(
@@ -164,19 +174,7 @@ int main(int argc, char** argv)
         " ░▒▓██████▓▒░░▒▓█▓▒░░▒▓█▓▒░░▒▓██████▓▒░░▒▓███████▓▒░▒▓███████▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░\n"
         );
 
-
-	if (argc > 2)
-	{
-		imagePath = argv[1];
-		outputPath = argv[2];
-	}
-	else
-	{
-		printf("Please provide input and output image files as arguments to this application.\n");
-		exit(1);
-	}
-
-
+        float * filter=createFilter(filterWidth);
 
 	//Read the image
 	uint8_t* rgb_image = stbi_load(imagePath, &width, &height, &bpp, channels);

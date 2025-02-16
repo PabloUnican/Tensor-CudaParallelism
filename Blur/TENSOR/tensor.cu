@@ -186,10 +186,8 @@ int main(int argc, char** argv)
 	char * imagePath;
 	char * outputPath;
 	
-	int height, width, bpp, channels=4;
+	int height, width, bpp, channels=4, filterWidth;
 	uint8_t * originalImage, * blurredImage;
-
-	int filterWidth;
 
 	if (argc > 3)
 	{
