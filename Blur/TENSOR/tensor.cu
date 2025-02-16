@@ -11,7 +11,7 @@
 #include <mma.h>
 #include <cuda_fp16.h>
 
-#define MAX_THREADS_PER_BLOCK 32
+#define MAX_THREADS_PER_BLOCK 64
 
 #define WMMA_M 32
 #define WMMA_N 8
@@ -66,13 +66,16 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
         // Identificadores de threads
         int temp = blockIdx.x * blockDim.x + threadIdx.x;
 
-        // Identificar warp
-        int warpId = temp / warpSize;
+        // dividir los warps del bloque
+        int numWarpsPerBlock = blockDim.x / warpSize;
 
         // Identificar thread dentro del warp
         int indexWarp = (threadIdx.x % (warpSize));
-        temp = warpId * WMMA_M + indexWarp;
 
+        // Identificar warp dentro del bloque
+        int warpId = (threadIdx.x / warpSize);
+
+        temp = (temp / warpSize) * WMMA_M + indexWarp;
         // pixel y canal a tratar
         int x = (temp / channels) % width;
         int y = (temp / channels) / width;
@@ -96,57 +99,69 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
         // inicializar resultados a cero
         nvcuda::wmma::fill_fragment(result, 0.0f);
 
+        // tamanho de cada matriz individual
+        int offsetLocalMatrix = WMMA_M * WMMA_N * warpId;
+        int offsetFilterMatrix = WMMA_N * WMMA_K * warpId;
+        int offsetResultMatrix = WMMA_M * WMMA_K * warpId;
+
         // declarar matrices en memoria compartida
-        alignas(128) // deben estar alineados
-        __shared__ half localMatrix[WMMA_M * WMMA_N];
-        __shared__ half filterMatrix[WMMA_N * WMMA_K];
-        __shared__ float resultMatrix[WMMA_M * WMMA_K];
+        alignas(alignof(half)) // deben estar alineados
+        // memoria compartida dinamica
+        extern __shared__ half sharedMemory[];
+        half* localMatrix = (half*)&sharedMemory[offsetLocalMatrix];
+        half* filterMatrix = (half*)&localMatrix[WMMA_M * WMMA_N * numWarpsPerBlock + offsetFilterMatrix];
+        float* resultMatrix = (float*)&filterMatrix[WMMA_N * WMMA_K * numWarpsPerBlock + offsetResultMatrix];
+        
+        if (indexWarp == 0 && blockIdx.x == 0) {
+                printf(" Id: %d, Local: %p, Filter: %p, Result: %p\n", warpId, localMatrix, filterMatrix, resultMatrix);
+        }
 
         int pendingValues = filterSize;
         // Iterar por bloques en tamanho de warp
         for (int i = 0; i < filterSize; i+= WMMA_N) {
-        //data matrix
-        // el indice no excede el numero de pixeles a cargar
-        if (indexWarp < WMMA_M) {
-                int temp = 0;
+                //data matrix
+                // el indice no excede el numero de pixeles a cargar
+                if (indexWarp < WMMA_M) {
+                        int temp = 0;
 
-                //iterar por todas las posiciones que se pueden cargar en la matriz
-                for (temp = 0; temp < min(WMMA_N, pendingValues); temp++) {
-                        //comprobacion de limites
-                        int filterX = ((temp + i) % filterWidth);
-                        int filterY = ((temp + i) / filterWidth);
-                        //obtener posicion pixel vecino
-                        int imageX = min(max(x + filterX - halfFilterWidth, 0), width - 1);
-                        int imageY = min(max(y + filterY - halfFilterWidth, 0), height - 1);
+                        //iterar por todas las posiciones que se pueden cargar en la matriz
+                        for (temp = 0; temp < min(WMMA_N, pendingValues); temp++) {
+                                //comprobacion de limites
+                                int filterX = ((temp + i) % filterWidth);
+                                int filterY = ((temp + i) / filterWidth);
+                                //obtener posicion pixel vecino
+                                int imageX = min(max(x + filterX - halfFilterWidth, 0), width - 1);
+                                int imageY = min(max(y + filterY - halfFilterWidth, 0), height - 1);
 
-                        //agregar vecino a matriz
-                        localMatrix[indexWarp * WMMA_N + temp] = 
-                                (half) rawImage[((imageY * width + imageX) * channels) + canal];
+                                //agregar vecino a matriz
+                                localMatrix[indexWarp * WMMA_N + temp] = 
+                                        (half) rawImage[((imageY * width + imageX) * channels) + canal];
+                        }
+                        //rellenar con 0 en caso de necesitarlo
+                        for (int j = temp; j < WMMA_N; j++) {
+                                localMatrix[indexWarp * WMMA_N + j] = 0;
+                                filterMatrix[j] = 0;
+                        }
                 }
-                //rellenar con 0 en caso de necesitarlo
-                for (int j = temp; j < WMMA_N; j++) {
-                        localMatrix[indexWarp * WMMA_N + j] = 0;
-                        filterMatrix[j] = 0;
+                //agregar coeficiente en el filtro
+                if (indexWarp < WMMA_N) {
+                        filterMatrix[indexWarp] = filter[indexWarp + i];
                 }
-        }
-        //agregar coeficiente en el filtro
-        if (indexWarp < WMMA_N) {
-                filterMatrix[indexWarp] = filter[indexWarp + i];
-        }
-        __syncwarp();
+                __syncwarp();
 
-        // cargar en matriz data
-        nvcuda::wmma::load_matrix_sync(data, localMatrix, WMMA_N);
-        // cargar en matriz mask
-        nvcuda::wmma::load_matrix_sync(mask, filterMatrix, WMMA_N);
-        // ejecutar codigo en tensor
-        nvcuda::wmma::mma_sync(result, data, mask, result);
+                // cargar en matriz data
+                nvcuda::wmma::load_matrix_sync(data, localMatrix, WMMA_N);
+                // cargar en matriz mask
+                nvcuda::wmma::load_matrix_sync(mask, filterMatrix, WMMA_N);
+                // ejecutar codigo en tensor
+                nvcuda::wmma::mma_sync(result, data, mask, result);
 
-        //reducir numero de valores faltantes
-        pendingValues -= WMMA_N;
+                //reducir numero de valores faltantes
+                pendingValues -= WMMA_N;
         }
         // cargar resultado a matriz
         nvcuda::wmma::store_matrix_sync(resultMatrix, result, WMMA_K, nvcuda::wmma::mem_col_major);
+
         // almacenar resultados de vuelta en la memoria global
         if (indexWarp < WMMA_M) {
                 blurredImage[((y * width + x) * channels) + canal] = (uint8_t) resultMatrix[indexWarp];
@@ -242,7 +257,13 @@ int main(int argc, char** argv)
         //procedimiento
         dim3 blockDim(MAX_THREADS_PER_BLOCK);
         dim3 gridDim((width * height) / ((MAX_THREADS_PER_BLOCK) / channels) + 1);
-        GaussianBlurOnCUDA<<<gridDim, blockDim>>>(d_blurredImage, d_originalImage, width, height, channels, d_filter, filterWidth);
+        
+        // Calcular el tamanho maximo para memoria compartida dinamica
+        size_t sharedMemorySize = ((WMMA_M * WMMA_N + 256 - 1) / 256 * 256) * (MAX_THREADS_PER_BLOCK / 32) * sizeof(half) + 
+                ((WMMA_N * WMMA_K + 256 - 1) / 256 * 256) * (MAX_THREADS_PER_BLOCK / 32) * sizeof(half) + 
+                ((WMMA_M * WMMA_K + 256 - 1) / 256 * 256) * (MAX_THREADS_PER_BLOCK / 32) * sizeof(float);
+
+        GaussianBlurOnCUDA<<<gridDim, blockDim, sharedMemorySize>>>(d_blurredImage, d_originalImage, width, height, channels, d_filter, filterWidth);
 
         cudaDeviceSynchronize();
 
