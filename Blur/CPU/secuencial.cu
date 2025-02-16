@@ -150,7 +150,7 @@ int main(int argc, char** argv)
 	int height, width, bpp, channels=4;
 	uchar4 * originalImage, * blurredImage;
 
-	int filterWidth=9;
+	int filterWidth=3;
 	float * filter=createFilter(filterWidth);
 
         //PRINT TITLE
