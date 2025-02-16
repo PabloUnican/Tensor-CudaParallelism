@@ -11,7 +11,7 @@
 #include <mma.h>
 #include <cuda_fp16.h>
 
-#define NUM_WARPS 11 // numero de warps por bloque maximo 32 (1024 threads)
+#define NUM_WARPS 16 // numero de warps por bloque maximo 32 (1024 threads)
 
 #define WMMA_M 32
 #define WMMA_N 8
@@ -87,7 +87,13 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
         // numero de valores de filtrado
         int filterSize = filterWidth * filterWidth;
 
+        // reparto de warps
+        float balancer = 0.5;
+        int warpsTensor = balancer * NUM_WARPS;
+        
         // Implementacion TENSOR
+        if (warpId < warpsTensor) {
+        
         // Definir estructura matrices
         nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, nvcuda::wmma::row_major> data;
         nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, nvcuda::wmma::col_major> mask;
@@ -159,12 +165,10 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
         if (indexWarp < WMMA_M) {
                 blurredImage[((y * width + x) * channels) + canal] = (uint8_t) resultMatrix[indexWarp + offsetResultMatrix];
         }
-
-        /*
-        
+        } else {        
         //Implementacion CUDA
         // pixel desenfocado
-        float blurredPixel = 0;
+        half blurredPixel = 0;
         // Calcular el pixel desenfocado
         for (int filterY = -halfFilterWidth; filterY <= halfFilterWidth; filterY++) {
                 for (int filterX = -halfFilterWidth; filterX <= halfFilterWidth; filterX++) {
@@ -177,14 +181,12 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
                         int filterIndex = (filterY + halfFilterWidth) * filterWidth + (filterX + halfFilterWidth);
                         
                         // Pixel de la imagen a tratar
-                        uint8_t pixel = rawImage[((imageY * width + imageX) * channels) + canal];
-                        blurredPixel += ((half)pixel) * filter[filterIndex];
+                        half pixel = (half) rawImage[((imageY * width + imageX) * channels) + canal];
+                        blurredPixel += pixel * filter[filterIndex];
                 }
         }
-        blurredImage[((y * width + x) * channels) + canal] = (uint8_t)blurredPixel;
-
-        */
-        
+        blurredImage[((y * width + x) * channels) + canal] = (uint8_t) __half2float(blurredPixel);
+        }        
 }
 
 // Main entry into the application
