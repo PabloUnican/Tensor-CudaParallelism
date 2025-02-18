@@ -11,9 +11,13 @@
 #include <mma.h>
 #include <cuda_fp16.h>
 
-#define NUM_WARPS 11 // numero de warps por bloque maximo 32 (1024 threads)
+// Max 23 warps per Block (Shared memory size restriction)
+#define NUM_WARPS 8 // numero de warps por bloque maximo 32 (1024 threads)
 
 // restriccion del codigo, deben ser <= 32
+// Matriz A: MxK
+// Matriz B: KxN
+// Matriz C: MxN
 #define WMMA_M 32
 #define WMMA_N 8
 #define WMMA_K 16
@@ -98,28 +102,27 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
         nvcuda::wmma::fill_fragment(result, 0.0f);
 
         // tamanho de cada matriz individual
-        int offsetLocalMatrix = WMMA_M * WMMA_N * warpId;
-        int offsetResultMatrix = WMMA_M * WMMA_K * warpId;
+        int offsetLocalMatrix = WMMA_M * WMMA_K * warpId;
+        int offsetResultMatrix = WMMA_K * WMMA_N * warpId;
 
         // declarar matrices en memoria compartida
          // deben estar alineados
-        alignas(alignof(half)) __shared__ half localMatrix[WMMA_M * WMMA_N * NUM_WARPS];
+        alignas(alignof(half)) __shared__ half localMatrix[WMMA_M * WMMA_K * NUM_WARPS];
+
+        alignas(alignof(half)) __shared__ half filterMatrix[WMMA_K * WMMA_N];
         
-        alignas(alignof(float)) __shared__ float resultMatrix[WMMA_M * WMMA_K * NUM_WARPS];
-
-        alignas(alignof(half)) __shared__ half filterMatrix[WMMA_N * WMMA_K];
-
+        alignas(alignof(float)) __shared__ float resultMatrix[WMMA_M * WMMA_N * NUM_WARPS];
 
         int pendingValues = filterSize;
         // Iterar por bloques en tamanho de warp
-        for (int i = 0; i < filterSize; i+= WMMA_N) {
+        for (int i = 0; i < filterSize; i+= WMMA_K) {
                 //data matrix
                 // el indice no excede el numero de pixeles a cargar
                 if (indexWarp < WMMA_M) {
                         int temp = 0;
 
                         //iterar por todas las posiciones que se pueden cargar en la matriz
-                        for (temp = 0; temp < min(WMMA_N, pendingValues); temp++) {
+                        for (temp = 0; temp < min(WMMA_K, pendingValues); temp++) {
                                 //comprobacion de limites
                                 int filterX = ((temp + i) % filterWidth);
                                 int filterY = ((temp + i) / filterWidth);
@@ -128,40 +131,43 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
                                 int imageY = min(max(y + filterY - halfFilterWidth, 0), height - 1);
 
                                 //agregar vecino a matriz
-                                localMatrix[indexWarp * WMMA_N + temp + offsetLocalMatrix] = 
+                                localMatrix[indexWarp * WMMA_K + temp + offsetLocalMatrix] = 
                                         (half) rawImage[((imageY * width + imageX) * channels) + canal];
                         }
                         //rellenar con 0 en caso de necesitarlo
-                        for (int j = temp; j < WMMA_N; j++) {
-                                localMatrix[indexWarp * WMMA_N + j + offsetLocalMatrix] = 0;
-                                if (warpId == 0 && indexWarp < WMMA_K) {
-                                        filterMatrix[indexWarp * WMMA_N + j] = 0;
+                        for (int j = temp; j < WMMA_K; j++) {
+                                localMatrix[indexWarp * WMMA_K + j + offsetLocalMatrix] = 0;
+                                if (warpId == 0 && indexWarp < WMMA_N) {
+                                        filterMatrix[indexWarp * WMMA_K + j] = 0;
                                 }
                         }
                 }
                 //agregar coeficiente en el filtro
-                if (indexWarp < min(WMMA_N, pendingValues) && warpId == 0) {
-                        for (int j = 0; j < 1; j++) { // problema filtro
-                        filterMatrix[j * WMMA_N + indexWarp] = filter[indexWarp + i];
+                if (indexWarp < min(WMMA_K, pendingValues) && warpId < WMMA_N) {
+                        for (int j = warpId; j < WMMA_N; j+= NUM_WARPS) {
+                                filterMatrix[j * WMMA_K + indexWarp] = filter[indexWarp + i];
                         }
                 }
                 __syncthreads();
 
                 // cargar en matriz data
-                nvcuda::wmma::load_matrix_sync(data, &localMatrix[offsetLocalMatrix], WMMA_N);
+                nvcuda::wmma::load_matrix_sync(data, &localMatrix[offsetLocalMatrix], WMMA_K);
                 // cargar en matriz mask
-                nvcuda::wmma::load_matrix_sync(mask, filterMatrix, WMMA_N);
+                nvcuda::wmma::load_matrix_sync(mask, filterMatrix, WMMA_K);
                 // ejecutar codigo en tensor
                 nvcuda::wmma::mma_sync(result, data, mask, result);
                 //reducir numero de valores faltantes
-                pendingValues -= WMMA_N;
+                pendingValues -= WMMA_K;
         }
         // cargar resultado a matriz
-        nvcuda::wmma::store_matrix_sync(&resultMatrix[offsetResultMatrix], result, WMMA_K, nvcuda::wmma::mem_col_major);
+        nvcuda::wmma::store_matrix_sync(&resultMatrix[offsetResultMatrix], result, WMMA_N, nvcuda::wmma::mem_col_major);
 
         // almacenar resultados de vuelta en la memoria global
         if (indexWarp < WMMA_M) {
-                blurredImage[((y * width + x) * channels) + canal] = (uint8_t) resultMatrix[indexWarp + offsetResultMatrix];
+                //iterar por los resultados de los distintos filtros
+                for (int i = 0; i < 1; i++) {
+                        blurredImage[((y * width + x) * channels) + canal] = (uint8_t) resultMatrix[indexWarp + offsetResultMatrix];
+                }
         }        
 }
 
