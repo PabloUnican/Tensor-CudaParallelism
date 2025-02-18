@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <time.h>
 
-#define MAX_THREADS_PER_BLOCK 128
+#define MAX_THREADS_PER_BLOCK 256
 
 float * createFilter(int width)
 {
