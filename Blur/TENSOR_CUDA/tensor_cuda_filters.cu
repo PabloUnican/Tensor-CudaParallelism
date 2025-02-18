@@ -62,7 +62,7 @@ Kernel de CUDA para realizar el desenfoque gaussiano
 Estructura unidimensional de bloques (x para posicion)
 Estructura unidimensional de threads (x para posicion y canal)
 */ 
-__global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* const rawImage, int width, int height, int channels, const half* filter, int filterWidth)
+__global__ void GaussianBlur(uint8_t* const blurredImage, const uint8_t* const rawImage, int width, int height, int channels, const half* filter, int filterWidth)
 {        
         // Identificadores de threads
         int temp = blockIdx.x * blockDim.x + threadIdx.x;
@@ -262,7 +262,7 @@ int main(int argc, char** argv)
                                   (WMMA_N * WMMA_K) * sizeof(half) +
                                   (WMMA_M * WMMA_N) * NUM_WARPS * sizeof(float);
 
-        GaussianBlurOnCUDA<<<gridDim, blockDim, sharedMemorySize>>>(d_blurredImage, d_originalImage, width, height, channels, d_filter, filterWidth);
+        GaussianBlur<<<gridDim, blockDim, sharedMemorySize>>>(d_blurredImage, d_originalImage, width, height, channels, d_filter, filterWidth);
 
         cudaDeviceSynchronize();
 
