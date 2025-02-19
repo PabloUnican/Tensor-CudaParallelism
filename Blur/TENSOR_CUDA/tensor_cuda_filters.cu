@@ -94,101 +94,101 @@ __global__ void GaussianBlur(uint8_t* const blurredImage, const uint8_t* const r
         
         // Implementacion TENSOR
         if (warpId < warpsTensor) {
-        
-        // Definir estructura matrices
-        nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, nvcuda::wmma::row_major> data;
-        nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, nvcuda::wmma::col_major> mask;
-        nvcuda::wmma::fragment<nvcuda::wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> result;
-        
-        // inicializar resultados a cero
-        nvcuda::wmma::fill_fragment(result, 0.0f);
+                
+                // Definir estructura matrices
+                nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, nvcuda::wmma::row_major> data;
+                nvcuda::wmma::fragment<nvcuda::wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, nvcuda::wmma::col_major> mask;
+                nvcuda::wmma::fragment<nvcuda::wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float> result;
+                
+                // inicializar resultados a cero
+                nvcuda::wmma::fill_fragment(result, 0.0f);
 
-        // tamanho de cada matriz individual
-        int offsetLocalMatrix = WMMA_M * WMMA_K * warpId;
-        int offsetResultMatrix = WMMA_M * WMMA_N * warpId;
+                // tamanho de cada matriz individual
+                int offsetLocalMatrix = WMMA_M * WMMA_K * warpId;
+                int offsetResultMatrix = WMMA_M * WMMA_N * warpId;
 
-        // declarar matrices en memoria compartida
-         // deben estar alineados
-        extern __shared__ half sharedMemory[];
-        
-        half* localMatrix = (half*)&sharedMemory[offsetLocalMatrix];
-        
-        half* filterMatrix = (half*)&sharedMemory[WMMA_M * WMMA_K * warpsTensor];
-        
-        float* resultMatrix = (float*)&sharedMemory[WMMA_M * WMMA_K * warpsTensor + WMMA_K * WMMA_N + offsetResultMatrix];
+                // declarar matrices en memoria compartida
+                // deben estar alineados
+                extern __shared__ half sharedMemory[];
+                
+                half* localMatrix = (half*)&sharedMemory[offsetLocalMatrix];
+                
+                half* filterMatrix = (half*)&sharedMemory[WMMA_M * WMMA_K * warpsTensor];
+                
+                float* resultMatrix = (float*)&sharedMemory[WMMA_M * WMMA_K * warpsTensor + WMMA_K * WMMA_N + offsetResultMatrix];
 
-        int pendingValues = filterSize;
-        // Iterar por bloques en tamanho de warp
-        for (int i = 0; i < filterSize; i+= WMMA_K) {
-                //data matrix
-                // el indice no excede el numero de pixeles a cargar
-                if (indexWarp < WMMA_M) {
-                        int temp = 0;
+                int pendingValues = filterSize;
+                // Iterar por bloques en tamanho de warp
+                for (int i = 0; i < filterSize; i+= WMMA_K) {
+                        //data matrix
+                        // el indice no excede el numero de pixeles a cargar
+                        if (indexWarp < WMMA_M) {
+                                int temp = 0;
 
-                        //iterar por todas las posiciones que se pueden cargar en la matriz
-                        for (temp = 0; temp < min(WMMA_K, pendingValues); temp++) {
-                                //comprobacion de limites
-                                int filterX = ((temp + i) % filterWidth);
-                                int filterY = ((temp + i) / filterWidth);
-                                //obtener posicion pixel vecino
-                                int imageX = min(max(x + filterX - halfFilterWidth, 0), width - 1);
-                                int imageY = min(max(y + filterY - halfFilterWidth, 0), height - 1);
+                                //iterar por todas las posiciones que se pueden cargar en la matriz
+                                for (temp = 0; temp < min(WMMA_K, pendingValues); temp++) {
+                                        //comprobacion de limites
+                                        int filterX = ((temp + i) % filterWidth);
+                                        int filterY = ((temp + i) / filterWidth);
+                                        //obtener posicion pixel vecino
+                                        int imageX = min(max(x + filterX - halfFilterWidth, 0), width - 1);
+                                        int imageY = min(max(y + filterY - halfFilterWidth, 0), height - 1);
 
-                                //agregar vecino a matriz
-                                localMatrix[indexWarp * WMMA_K + temp] = 
-                                        (half) rawImage[((imageY * width + imageX) * channels) + canal];
-                        }
-                        //rellenar con 0 en caso de necesitarlo
-                        for (int j = temp; j < WMMA_K; j++) {
-                                localMatrix[indexWarp * WMMA_K + j] = 0;
-                                if (warpId == 0) {
-                                        filterMatrix[j] = 0;
+                                        //agregar vecino a matriz
+                                        localMatrix[indexWarp * WMMA_K + temp] = 
+                                                (half) rawImage[((imageY * width + imageX) * channels) + canal];
+                                }
+                                //rellenar con 0 en caso de necesitarlo
+                                for (int j = temp; j < WMMA_K; j++) {
+                                        localMatrix[indexWarp * WMMA_K + j] = 0;
+                                        if (warpId == 0) {
+                                                filterMatrix[j] = 0;
+                                        }
                                 }
                         }
-                }
-                //agregar coeficiente en el filtro
-                if (indexWarp < WMMA_K && warpId == 0) {
-                        filterMatrix[indexWarp] = filter[indexWarp + i];
-                }
-                __syncthreads();
+                        //agregar coeficiente en el filtro
+                        if (indexWarp < WMMA_K && warpId == 0) {
+                                filterMatrix[indexWarp] = filter[indexWarp + i];
+                        }
+                        __syncthreads();
 
-                // cargar en matriz data
-                nvcuda::wmma::load_matrix_sync(data, localMatrix, WMMA_K);
-                // cargar en matriz mask
-                nvcuda::wmma::load_matrix_sync(mask, filterMatrix, WMMA_K);
-                // ejecutar codigo en tensor
-                nvcuda::wmma::mma_sync(result, data, mask, result);
-                //reducir numero de valores faltantes
-                pendingValues -= WMMA_K;
-        }
-        // cargar resultado a matriz
-        nvcuda::wmma::store_matrix_sync(resultMatrix, result, WMMA_N, nvcuda::wmma::mem_col_major);
+                        // cargar en matriz data
+                        nvcuda::wmma::load_matrix_sync(data, localMatrix, WMMA_K);
+                        // cargar en matriz mask
+                        nvcuda::wmma::load_matrix_sync(mask, filterMatrix, WMMA_K);
+                        // ejecutar codigo en tensor
+                        nvcuda::wmma::mma_sync(result, data, mask, result);
+                        //reducir numero de valores faltantes
+                        pendingValues -= WMMA_K;
+                }
+                // cargar resultado a matriz
+                nvcuda::wmma::store_matrix_sync(resultMatrix, result, WMMA_N, nvcuda::wmma::mem_col_major);
 
-        // almacenar resultados de vuelta en la memoria global
-        if (indexWarp < WMMA_M) {
-                blurredImage[((y * width + x) * channels) + canal] = (uint8_t) resultMatrix[indexWarp];
-        }
+                // almacenar resultados de vuelta en la memoria global
+                if (indexWarp < WMMA_M) {
+                        blurredImage[((y * width + x) * channels) + canal] = (uint8_t) resultMatrix[indexWarp];
+                }
         } else {        
-        //Implementacion CUDA
-        // pixel desenfocado
-        half blurredPixel = 0;
-        // Calcular el pixel desenfocado
-        for (int filterY = -halfFilterWidth; filterY <= halfFilterWidth; filterY++) {
-                for (int filterX = -halfFilterWidth; filterX <= halfFilterWidth; filterX++) {
-                        
-                        //comprobacion de limites
-                        int imageX = min(max(x + filterX, 0), width - 1);
-                        int imageY = min(max(y + filterY, 0), height - 1);
+                //Implementacion CUDA
+                // pixel desenfocado
+                half blurredPixel = 0;
+                // Calcular el pixel desenfocado
+                for (int filterY = -halfFilterWidth; filterY <= halfFilterWidth; filterY++) {
+                        for (int filterX = -halfFilterWidth; filterX <= halfFilterWidth; filterX++) {
+                                
+                                //comprobacion de limites
+                                int imageX = min(max(x + filterX, 0), width - 1);
+                                int imageY = min(max(y + filterY, 0), height - 1);
 
-                        // Calcular el indice del filtro
-                        int filterIndex = (filterY + halfFilterWidth) * filterWidth + (filterX + halfFilterWidth);
-                        
-                        // Pixel de la imagen a tratar
-                        half pixel = (half) rawImage[((imageY * width + imageX) * channels) + canal];
-                        blurredPixel += pixel * filter[filterIndex];
+                                // Calcular el indice del filtro
+                                int filterIndex = (filterY + halfFilterWidth) * filterWidth + (filterX + halfFilterWidth);
+                                
+                                // Pixel de la imagen a tratar
+                                half pixel = (half) rawImage[((imageY * width + imageX) * channels) + canal];
+                                blurredPixel += pixel * filter[filterIndex];
+                        }
                 }
-        }
-        blurredImage[((y * width + x) * channels) + canal] = (uint8_t) __half2float(blurredPixel);
+                blurredImage[((y * width + x) * channels) + canal] = (uint8_t) __half2float(blurredPixel);
         }        
 }
 
