@@ -89,7 +89,7 @@ __global__ void GaussianBlur(uint8_t* const blurredImage, const uint8_t* const r
         int filterSize = filterWidth * filterWidth;
 
         // reparto de warps
-        float balancer = 1.0;
+        float balancer = 0.4;
         int blockTensor = balancer * gridDim.x;
         
         // Implementacion TENSOR
@@ -164,13 +164,13 @@ __global__ void GaussianBlur(uint8_t* const blurredImage, const uint8_t* const r
                         pendingValues -= WMMA_K;
                 }
                 // cargar resultado a matriz
-                nvcuda::wmma::store_matrix_sync(resultMatrix, result, WMMA_N, nvcuda::wmma::mem_col_major);
+                nvcuda::wmma::store_matrix_sync(resultMatrix, result, WMMA_N, nvcuda::wmma::mem_row_major);
 
                 // almacenar resultados de vuelta en la memoria global
                 if (indexWarp < WMMA_M) {
-                        //ejemplo suma de filtros
-                        for (int i = 0; i < numFilters; i++) {
-                                blurredImage[((y * width + x) * channels) + canal] += (uint8_t) resultMatrix[i * WMMA_N + indexWarp] / numFilters;
+                        //ejemplo de almacenamiento de resultados
+                        for (int i = 0; i < 1; i++) {
+                                blurredImage[((y * width + x) * channels) + canal] = (uint8_t) resultMatrix[indexWarp * WMMA_N + 0];
                         }
                 }
         } else {        
@@ -255,7 +255,7 @@ int main(int argc, char** argv)
         //convertir a matriz half
         half filters[sizeof(filtersaux) / sizeof(float)];
         for (int i = 0; i < sizeof(filtersaux) / sizeof(float); i++) {
-                filters[i] = __float2half(filters[i]);
+                filters[i] = __float2half(filtersaux[i]);
         }
         int filtersWidth = 3;
         int numFilters = (sizeof(filters) / sizeof(half)) / (filtersWidth * filtersWidth);
