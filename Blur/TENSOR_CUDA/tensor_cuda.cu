@@ -12,7 +12,7 @@
 #include <cuda_fp16.h>
 
 // max 23 warps por bloque (exceed shared memory)
-#define NUM_WARPS 16 // numero de warps por bloque maximo 32 (1024 threads)
+#define NUM_WARPS 8 // numero de warps por bloque maximo 32 (1024 threads)
 
 #define WMMA_M 32
 #define WMMA_N 8
@@ -89,11 +89,11 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
         int filterSize = filterWidth * filterWidth;
 
         // reparto de warps
-        float balancer = 0.5;
-        int warpsTensor = balancer * NUM_WARPS;
+        float balancer = 1.0;
+        int blockTensor = balancer * gridDim.x;
         
         // Implementacion TENSOR
-        if (warpId < warpsTensor) {
+        if (blockIdx.x < blockTensor) {
         
         // Definir estructura matrices
         nvcuda::wmma::fragment<nvcuda::wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, nvcuda::wmma::row_major> data;
@@ -113,9 +113,9 @@ __global__ void GaussianBlurOnCUDA(uint8_t* const blurredImage, const uint8_t* c
         
         half* localMatrix = (half*)&sharedMemory[offsetLocalMatrix];
         
-        half* filterMatrix = (half*)&sharedMemory[WMMA_M * WMMA_K * warpsTensor];
+        half* filterMatrix = (half*)&sharedMemory[WMMA_M * WMMA_K * NUM_WARPS];
         
-        float* resultMatrix = (float*)&sharedMemory[WMMA_M * WMMA_K * warpsTensor + WMMA_K * WMMA_N + offsetResultMatrix];
+        float* resultMatrix = (float*)&sharedMemory[WMMA_M * WMMA_K * NUM_WARPS + WMMA_K * WMMA_N + offsetResultMatrix];
 
         int pendingValues = filterSize;
         // Iterar por bloques en tamanho de warp
