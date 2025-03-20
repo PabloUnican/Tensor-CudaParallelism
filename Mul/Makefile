@@ -4,7 +4,7 @@
 NVCC = nvcc
 
 # Compiler flags
-CFLAGS = -O0 -arch=sm_89
+CFLAGS = -O3 -arch=sm_89 -lineinfo
 
 # Target executable
 TARGET = matrix_mul
