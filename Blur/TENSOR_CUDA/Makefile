@@ -4,13 +4,13 @@
 NVCC = nvcc
 
 # Compiler flags
-CFLAGS = -O0 -arch=sm_89
+CFLAGS = -O3 -arch=sm_89
 
 # Target executable
-TARGET = tensor_cuda_kernels
+TARGET = tensor_cuda_filters
 
 # Source files
-SRCS = tensor_cuda_kernels.cu
+SRCS = tensor_cuda_filters.cu
 
 # Build the target
 $(TARGET): $(SRCS)

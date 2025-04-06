@@ -57,6 +57,25 @@ half * createFilter(int width)
         return res;
 }
 
+// Final matrix needs to be bigger than input matrix
+void paddedFilter(half * filter, half * paddedFilter, int startSize, int finalSize) {
+        int halfPadding = (finalSize - startSize) / 2;
+
+        // Initialize the entire padded matrix with zeros
+        for (int i = 0; i < finalSize * finalSize; i++) {
+                paddedFilter[i] = __float2half(0.0f);
+        }
+
+        // Copy the original filter into the center of the padded matrix
+        for (int row = 0; row < startSize; row++) {
+                for (int col = 0; col < startSize; col++) {
+                        int paddedRow = row + halfPadding;
+                        int paddedCol = col + halfPadding;
+                        paddedFilter[paddedRow * finalSize + paddedCol] = filter[row * startSize + col];
+                }
+        }
+}
+
 /*
 Kernel de CUDA para realizar el desenfoque gaussiano
 Estructura unidimensional de bloques (x para posicion)
@@ -147,8 +166,8 @@ __global__ void GaussianBlur(uint8_t* const blurredImage, const uint8_t* const r
                                 }
                         }
                         //agregar coeficiente en el filtro
-                        if (indexWarp < min(WMMA_K, pendingValues)) {
-                                for (int j = warpId; j < numFilters; j+= NUM_WARPS) {
+                        if (indexWarp < min(WMMA_K, pendingValues) && warpId == 0) {
+                                for (int j = 0; j < numFilters; j++) {
                                         filterMatrix[j * WMMA_K + indexWarp] = filter[j * filterSize + indexWarp + i];
                                 }
                         }
@@ -164,36 +183,38 @@ __global__ void GaussianBlur(uint8_t* const blurredImage, const uint8_t* const r
                         pendingValues -= WMMA_K;
                 }
                 // cargar resultado a matriz
-                nvcuda::wmma::store_matrix_sync(resultMatrix, result, WMMA_N, nvcuda::wmma::mem_row_major);
+                nvcuda::wmma::store_matrix_sync(resultMatrix, result, WMMA_N, nvcuda::wmma::mem_col_major);
 
                 // almacenar resultados de vuelta en la memoria global
                 if (indexWarp < WMMA_M) {
                         //ejemplo de almacenamiento de resultados
-                        for (int i = 0; i < 1; i++) {
-                                blurredImage[((y * width + x) * channels) + canal] = (uint8_t) resultMatrix[indexWarp * WMMA_N + 0];
+                        for (int i = 0; i < numFilters; i++) {
+                                blurredImage[((y * width + x) * channels) + canal + (i * width * height * channels)] = (uint8_t) resultMatrix[i * WMMA_N + indexWarp];
                         }
                 }
-        } else {        
-                //Implementacion CUDA
-                // pixel desenfocado
-                half blurredPixel = 0;
-                // Calcular el pixel desenfocado
-                for (int filterY = -halfFilterWidth; filterY <= halfFilterWidth; filterY++) {
-                        for (int filterX = -halfFilterWidth; filterX <= halfFilterWidth; filterX++) {
-                                
-                                //comprobacion de limites
-                                int imageX = min(max(x + filterX, 0), width - 1);
-                                int imageY = min(max(y + filterY, 0), height - 1);
+        } else {     
+                for (int i = 0; i < numFilters; i++) {   
+                        //Implementacion CUDA
+                        // pixel desenfocado
+                        half blurredPixel = 0;
+                        // Calcular el pixel desenfocado
+                        for (int filterY = -halfFilterWidth; filterY <= halfFilterWidth; filterY++) {
+                                for (int filterX = -halfFilterWidth; filterX <= halfFilterWidth; filterX++) {
+                                        
+                                        //comprobacion de limites
+                                        int imageX = min(max(x + filterX, 0), width - 1);
+                                        int imageY = min(max(y + filterY, 0), height - 1);
 
-                                // Calcular el indice del filtro
-                                int filterIndex = (filterY + halfFilterWidth) * filterWidth + (filterX + halfFilterWidth);
-                                
-                                // Pixel de la imagen a tratar
-                                half pixel = (half) rawImage[((imageY * width + imageX) * channels) + canal];
-                                blurredPixel += pixel * filter[filterIndex];
+                                        // Calcular el indice del filtro
+                                        int filterIndex = (filterY + halfFilterWidth) * filterWidth + (filterX + halfFilterWidth);
+                                        
+                                        // Pixel de la imagen a tratar
+                                        half pixel = (half) rawImage[((imageY * width + imageX) * channels) + canal];
+                                        blurredPixel += pixel * filter[filterIndex + i * filterSize];
+                                }
                         }
+                        blurredImage[((y * width + x) * channels) + canal + (i * width * height * channels)] = (uint8_t) __half2float(blurredPixel);
                 }
-                blurredImage[((y * width + x) * channels) + canal] = (uint8_t) __half2float(blurredPixel);
         }        
 }
 
@@ -204,18 +225,19 @@ int main(int argc, char** argv)
 	char * imagePath;
 	char * outputPath;
 	
-	int height, width, bpp, channels=4, filterWidth;
+	int height, width, bpp, channels=4, filterWidth, numFilters;
 	uint8_t * originalImage, * blurredImage;
 
-	if (argc > 3)
+	if (argc > 4)
 	{
 		imagePath = argv[1];
 		outputPath = argv[2];
                 filterWidth = atoi(argv[3]);
+                numFilters = atoi(argv[4]);
 	}
 	else
 	{
-		printf("Please provide input and output image files and filter size as arguments to this application.\n");
+		printf("Please provide input and output image files, filter size and number of it as arguments to this application.\n");
 		exit(1);
 	}
         
@@ -230,45 +252,28 @@ int main(int argc, char** argv)
                 " ░▒▓██████▓▒░░▒▓█▓▒░░▒▓█▓▒░░▒▓██████▓▒░░▒▓███████▓▒░▒▓███████▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░\n"
                 );
         
-        //crear filtro
-	half * filter=createFilter(filterWidth);
+        //crear filtros
+        
+        // matriz que guarda los filtros
+        half * filters = (half *)malloc(filterWidth * filterWidth * numFilters * sizeof(half));
 
-        //crear matriz de varios filtros
-        float filtersaux[] = {
-                0.f,0.f,0.f,
-                0.f,1.f,-1.f,
-                0.f,0.f,0.f,
-
-                0.f,0.f,0.f,
-                -1.f,1.f,0.f,
-                0.f,0.f,0.f,
-
-                0.f,-1.f,0.f,
-                0.f,1.f,0.f,
-                0.f,0.f,0.f,
-
-                0.f,0.f,0.f,
-                0.f,1.f,0.f,
-                0.f,-1.f,0.f
-        };
-
-        //convertir a matriz half
-        half filters[sizeof(filtersaux) / sizeof(float)];
-        for (int i = 0; i < sizeof(filtersaux) / sizeof(float); i++) {
-                filters[i] = __float2half(filtersaux[i]);
+        // iterar por los filtros a crear
+        int filterAux = filterWidth;
+        for (int i = 0; i < numFilters; i++) {
+                // crear filtro
+                half * filter = createFilter(filterAux);
+                paddedFilter(filter, &filters[i * filterWidth * filterWidth], filterAux, filterWidth);
+                if (filterAux > 1) {
+                        filterAux -= 2;
+                }
         }
-        int filtersWidth = 3;
-        int numFilters = (sizeof(filters) / sizeof(half)) / (filtersWidth * filtersWidth);
 
 	//Read the image
 	originalImage = stbi_load(imagePath, &width, &height, &bpp, channels);
 	
 	if(originalImage==NULL) printf("Could not load image file: %s\n",imagePath);
-
-        //time
-        clock_t t = clock();
         
-	blurredImage=(uint8_t *)malloc(width*height*channels*sizeof(uint8_t));
+	blurredImage=(uint8_t *)malloc(width*height*channels*numFilters*sizeof(uint8_t));
 	printf("Width:%d, Height:%d Size(in Bytes):%lu\n", width, height, (long unsigned int) width*height*bpp*channels);
 
         // Definir punteros para la memoria de la GPU
@@ -277,12 +282,12 @@ int main(int argc, char** argv)
 
         // Reservar memoria en la GPU para la imagen original y la imagen final
         cudaMalloc((void**)&d_originalImage, width * height * channels * sizeof(uint8_t));
-        cudaMalloc((void**)&d_blurredImage, width * height * channels * sizeof(uint8_t));
-        cudaMalloc((void**)&d_filter, sizeof(filters));
+        cudaMalloc((void**)&d_blurredImage, width * height * channels * numFilters * sizeof(uint8_t));
+        cudaMalloc((void**)&d_filter, filterWidth * filterWidth * numFilters * sizeof(half));
 
         // Copiar la imagen original y filtro desde la memoria del host a la memoria de la GPU
         cudaMemcpy(d_originalImage, originalImage, width * height * channels * sizeof(uint8_t), cudaMemcpyHostToDevice);
-        cudaMemcpy(d_filter, filters, sizeof(filters), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_filter, filters, filterWidth * filterWidth * numFilters * sizeof(half), cudaMemcpyHostToDevice);
 
         //procedimiento
         int threadsPerBlock = NUM_WARPS * 32;
@@ -294,17 +299,26 @@ int main(int argc, char** argv)
                                   (WMMA_N * WMMA_K) * sizeof(half) +
                                   (WMMA_M * WMMA_N) * NUM_WARPS * sizeof(float);
 
+        // Iniciar el temporizador
+        clock_t t = clock();
+
         GaussianBlur<<<gridDim, blockDim, sharedMemorySize>>>(d_blurredImage, d_originalImage, width, height, channels, d_filter, filterWidth, numFilters);
 
         cudaDeviceSynchronize();
-
-        // Copiar la imagen final desde la memoria de la GPU a la memoria del host
-        cudaMemcpy(blurredImage, d_blurredImage, width * height * channels * sizeof(uint8_t), cudaMemcpyDeviceToHost);
-
+        
         //time
         t = clock() - t;
 
-	stbi_write_jpg(outputPath, width, height, 4, blurredImage, 100);
+        // Copiar la imagen final desde la memoria de la GPU a la memoria del host
+        cudaMemcpy(blurredImage, d_blurredImage, width * height * channels * numFilters * sizeof(uint8_t), cudaMemcpyDeviceToHost);
+
+        // Guardar la imagen desenfocada en un archivo
+        char * outputPathAux = (char *)malloc(strlen(outputPath) + 10 * sizeof(char));
+        for (int i = 0; i < numFilters; i++) {
+                strcpy(outputPathAux, outputPath);
+                sprintf(outputPathAux + strlen(outputPath), "_%d.jpg", i);
+	        stbi_write_jpg(outputPathAux, width, height, 4, blurredImage, 100);
+        }
 
         // Liberar la memoria de la GPU
         cudaFree(d_originalImage);
@@ -313,7 +327,7 @@ int main(int argc, char** argv)
         // Liberar la memoria del host
         free(originalImage);
         free(blurredImage);
-        free(filter);
+        free(filters);
 
 	printf("Done!\n");
 
