@@ -317,7 +317,7 @@ int main(int argc, char** argv)
         for (int i = 0; i < numFilters; i++) {
                 strcpy(outputPathAux, outputPath);
                 sprintf(outputPathAux + strlen(outputPath), "_%d.jpg", i);
-	        stbi_write_jpg(outputPathAux, width, height, 4, blurredImage, 100);
+	        stbi_write_jpg(outputPathAux, width, height, 4, &blurredImage[i * width * height * channels], 100);
         }
 
         // Liberar la memoria de la GPU
