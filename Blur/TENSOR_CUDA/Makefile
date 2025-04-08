@@ -4,7 +4,7 @@
 NVCC = nvcc
 
 # Compiler flags
-CFLAGS = -O3 -arch=sm_89
+CFLAGS = -O3 -arch=sm_89 -lineinfo
 
 # Target executable
 TARGET = tensor_cuda_filters

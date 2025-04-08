@@ -12,7 +12,7 @@
 #include <cuda_fp16.h>
 
 // max 23 warps por bloque (exceed shared memory)
-#define NUM_WARPS 16 // numero de warps por bloque maximo 32 (1024 threads)
+#define NUM_WARPS 8 // numero de warps por bloque maximo 32 (1024 threads)
 
 #define WMMA_M 32
 #define WMMA_N 8
@@ -124,7 +124,7 @@ __global__ void GaussianBlur(uint8_t* const blurredImage, const uint8_t* const r
 
                 // tamanho de cada matriz individual
                 int offsetLocalMatrix = WMMA_M * WMMA_K * warpId;
-                int offsetResultMatrix = WMMA_M * WMMA_N * warpId;
+                int offsetResultMatrix = WMMA_M * WMMA_N * warpId * (sizeof(float)/sizeof(half));
 
                 // declarar matrices en memoria compartida
                 // deben estar alineados
@@ -159,7 +159,7 @@ __global__ void GaussianBlur(uint8_t* const blurredImage, const uint8_t* const r
                                 }
                                 //rellenar con 0 en caso de necesitarlo
                                 for (int j = temp; j < WMMA_K; j++) {
-                                        localMatrix[indexWarp * WMMA_K + j + offsetLocalMatrix] = 0;
+                                        localMatrix[indexWarp * WMMA_K + j] = 0;
                                         if (warpId == 0 && indexWarp < WMMA_N) {
                                                 filterMatrix[indexWarp * WMMA_K + j] = 0;
                                         }
@@ -183,13 +183,13 @@ __global__ void GaussianBlur(uint8_t* const blurredImage, const uint8_t* const r
                         pendingValues -= WMMA_K;
                 }
                 // cargar resultado a matriz
-                nvcuda::wmma::store_matrix_sync(resultMatrix, result, WMMA_N, nvcuda::wmma::mem_col_major);
+                nvcuda::wmma::store_matrix_sync(resultMatrix, result, WMMA_N, nvcuda::wmma::mem_row_major);
 
                 // almacenar resultados de vuelta en la memoria global
                 if (indexWarp < WMMA_M) {
                         //ejemplo de almacenamiento de resultados
                         for (int i = 0; i < numFilters; i++) {
-                                blurredImage[((y * width + x) * channels) + canal + (i * width * height * channels)] = (uint8_t) resultMatrix[i * WMMA_N + indexWarp];
+                                blurredImage[((y * width + x) * channels) + canal + (i * width * height * channels)] = (uint8_t) resultMatrix[indexWarp * WMMA_N + i];
                         }
                 }
         } else {     
@@ -297,7 +297,7 @@ int main(int argc, char** argv)
         // espacio de memoria compartida
         size_t sharedMemorySize = (WMMA_M * WMMA_K) * NUM_WARPS * sizeof(half) + 
                                   (WMMA_N * WMMA_K) * sizeof(half) +
-                                  (WMMA_M * WMMA_N) * NUM_WARPS * sizeof(float);
+                                  (WMMA_M * WMMA_N) * NUM_WARPS * 2 * sizeof(float);
 
         // Iniciar el temporizador
         clock_t t = clock();
