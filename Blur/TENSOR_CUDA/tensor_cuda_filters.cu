@@ -81,7 +81,7 @@ Kernel de CUDA para realizar el desenfoque gaussiano
 Estructura unidimensional de bloques (x para posicion)
 Estructura unidimensional de threads (x para posicion y canal)
 */ 
-__global__ void GaussianBlur(uint8_t* const blurredImage, const uint8_t* const rawImage, int width, int height, int channels, const half* filter, int filterWidth, int numFilters)
+__global__ void GaussianBlur(uint8_t* const blurredImage, const uint8_t* const rawImage, int width, int height, int channels, const half* filter, int filterWidth, int numFilters, float balance)
 {        
         // Identificadores de threads
         int temp = blockIdx.x * blockDim.x + threadIdx.x;
@@ -108,7 +108,7 @@ __global__ void GaussianBlur(uint8_t* const blurredImage, const uint8_t* const r
         int filterSize = filterWidth * filterWidth;
 
         // reparto de warps
-        float balancer = 0.4;
+        float balancer = balance;
         int blockTensor = balancer * gridDim.x;
         
         // Implementacion TENSOR
@@ -227,6 +227,7 @@ int main(int argc, char** argv)
 	
 	int height, width, bpp, channels=4, filterWidth, numFilters;
 	uint8_t * originalImage, * blurredImage;
+        float balance;
 
 	if (argc > 4)
 	{
@@ -234,6 +235,7 @@ int main(int argc, char** argv)
 		outputPath = argv[2];
                 filterWidth = atoi(argv[3]);
                 numFilters = atoi(argv[4]);
+                balance = atof(argv[5]);
 	}
 	else
 	{
@@ -302,7 +304,7 @@ int main(int argc, char** argv)
         // Iniciar el temporizador
         clock_t t = clock();
 
-        GaussianBlur<<<gridDim, blockDim, sharedMemorySize>>>(d_blurredImage, d_originalImage, width, height, channels, d_filter, filterWidth, numFilters);
+        GaussianBlur<<<gridDim, blockDim, sharedMemorySize>>>(d_blurredImage, d_originalImage, width, height, channels, d_filter, filterWidth, numFilters, balance);
 
         cudaDeviceSynchronize();
         
