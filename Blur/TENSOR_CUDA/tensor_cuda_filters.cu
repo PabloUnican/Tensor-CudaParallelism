@@ -84,7 +84,7 @@ Estructura unidimensional de threads (x para posicion y canal)
 __global__ void GaussianBlur(uint8_t* const blurredImage, const uint8_t* const rawImage, int width, int height, int channels, const half* filter, int filterWidth, int numFilters, float balance)
 {        
         // Identificadores de threads
-        int temp = blockIdx.x * blockDim.x + threadIdx.x;
+        int pos = blockIdx.x * blockDim.x + threadIdx.x;
 
         // Identificar thread dentro del warp
         int indexWarp = (threadIdx.x % (warpSize));
@@ -92,7 +92,7 @@ __global__ void GaussianBlur(uint8_t* const blurredImage, const uint8_t* const r
         // Identificar warp dentro del bloque
         int warpId = (threadIdx.x / warpSize);
 
-        temp = (temp / warpSize) * WMMA_M + indexWarp;
+        int temp = (pos / warpSize) * WMMA_M + indexWarp;
         // pixel y canal a tratar
         int x = (temp / channels) % width;
         int y = (temp / channels) / width;
@@ -130,15 +130,52 @@ __global__ void GaussianBlur(uint8_t* const blurredImage, const uint8_t* const r
                 // deben estar alineados
                 extern __shared__ half sharedMemory[];
                 
+                // matriz de datos
                 half* localMatrix = (half*)&sharedMemory[offsetLocalMatrix];
                 
+                // matriz de coeficientes
                 half* filterMatrix = (half*)&sharedMemory[WMMA_M * WMMA_K * NUM_WARPS];
                 
+                // matriz de resultados
                 float* resultMatrix = (float*)&sharedMemory[WMMA_M * WMMA_K * NUM_WARPS + WMMA_K * WMMA_N + offsetResultMatrix];
+
+                // matriz intermedia
+                half* interMatrix = (half*)&sharedMemory[WMMA_M * WMMA_K * NUM_WARPS + WMMA_K * WMMA_N + 
+                                                         WMMA_M * WMMA_N * NUM_WARPS * (sizeof(float)/sizeof(half))];
 
                 int pendingValues = filterSize;
                 // Iterar por bloques en tamanho de warp
-                for (int i = 0; i < filterSize; i+= WMMA_K) {
+                for (int i = 0; i < filterSize; i+= WMMA_M) {
+                        // posicion de inicio
+                        int startIdx = i % filterWidth;
+
+                        // comprobar si el filtro se ha cargado completamente
+                        int toEnd = WMMA_K;
+                        int filterY = (i / filterWidth);
+                        while (toEnd > 0) { 
+                                //calcular numero de valores hasta fin de fila
+                                int restValues = filterWidth - startIdx;
+                                //cargar datos en la matriz intermedia (primera fila)
+                                for (int j = 0; j < restValues + warpSize - 1 - indexWarp; j+= warpSize) {
+                                        //posicion a cargar
+                                        int filterX = startIdx + j;
+                                        //posicion absoluta en imagen
+                                        int imageX = x - halfFilterWidth + filterX;
+                                        int imageY = y - halfFilterWidth + filterY;
+                                        //comprobacion de limites
+                                        if ((imageY >= height) || (imageY == height - 1 && imageX >= width)) {break;}
+                                        // Cargar el valor del pixel en interMatrix
+                                        // TODO: indexar correctamente valores siguientes filas
+                                        interMatrix[j + indexWarp] = (half)rawImage[((imageY * width + imageX) * channels) + canal];
+                                }
+                                filterY++;
+                                startIdx = 0;
+                                toEnd -= restValues;
+                        }
+
+
+                        __syncthreads();
+
                         //data matrix
                         // el indice no excede el numero de pixeles a cargar
                         if (indexWarp < WMMA_M) {
