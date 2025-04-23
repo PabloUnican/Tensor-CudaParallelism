@@ -152,10 +152,12 @@ __global__ void GaussianBlur(uint8_t* const blurredImage, const uint8_t* const r
                         // comprobar si el filtro se ha cargado completamente
                         int toEnd = WMMA_K;
                         int filterY = (i / filterWidth);
+                        // posicion inicial de la fila a cargar en interMatrix
+                        int posIniRow = 0;
                         while (toEnd > 0) { 
                                 //calcular numero de valores hasta fin de fila
-                                int restValues = filterWidth - startIdx;
-                                //cargar datos en la matriz intermedia (primera fila)
+                                int restValues = min(filterWidth - startIdx, toEnd);
+                                //cargar datos en la matriz intermedia
                                 for (int j = 0; j < restValues + warpSize - 1 - indexWarp; j+= warpSize) {
                                         //posicion a cargar
                                         int filterX = startIdx + j;
@@ -165,9 +167,9 @@ __global__ void GaussianBlur(uint8_t* const blurredImage, const uint8_t* const r
                                         //comprobacion de limites
                                         if ((imageY >= height) || (imageY == height - 1 && imageX >= width)) {break;}
                                         // Cargar el valor del pixel en interMatrix
-                                        // TODO: indexar correctamente valores siguientes filas
-                                        interMatrix[j + indexWarp] = (half)rawImage[((imageY * width + imageX) * channels) + canal];
+                                        interMatrix[j + indexWarp + posIniRow] = (half)rawImage[((imageY * width + imageX) * channels) + canal];
                                 }
+                                posIniRow += restValues + warpSize - 1;
                                 filterY++;
                                 startIdx = 0;
                                 toEnd -= restValues;
