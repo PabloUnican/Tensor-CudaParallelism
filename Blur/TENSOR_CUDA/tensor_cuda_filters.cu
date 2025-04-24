@@ -147,20 +147,21 @@ __global__ void GaussianBlur(uint8_t* const blurredImage, const uint8_t* const r
                 // Iterar por bloques en tamanho de warp
                 for (int i = 0; i < filterSize; i+= WMMA_M) {
                         // posicion de inicio
-                        int startIdx = i % filterWidth;
+                        int startFilterX = i % filterWidth;
 
                         // comprobar si el filtro se ha cargado completamente
                         int toEnd = WMMA_K;
-                        int filterY = (i / filterWidth);
+                        int startFilterY = (i / filterWidth);
+                        int filterY = startFilterY;
                         // posicion inicial de la fila a cargar en interMatrix
                         int posIniRow = 0;
                         while (toEnd > 0) { 
                                 //calcular numero de valores hasta fin de fila
-                                int restValues = min(filterWidth - startIdx, toEnd);
+                                int restValues = min(filterWidth - startFilterX, toEnd);
                                 //cargar datos en la matriz intermedia
                                 for (int j = 0; j < restValues + blockDim.x - 1 - threadIdx.x; j+= blockDim.x) {
                                         //posicion a cargar
-                                        int filterX = startIdx + j;
+                                        int filterX = startFilterX + j;
                                         //posicion absoluta en imagen
                                         int imageX = x - halfFilterWidth + filterX;
                                         int imageY = y - halfFilterWidth + filterY;
@@ -171,7 +172,7 @@ __global__ void GaussianBlur(uint8_t* const blurredImage, const uint8_t* const r
                                 }
                                 posIniRow += restValues + blockDim.x - 1;
                                 filterY++;
-                                startIdx = 0;
+                                startFilterX = 0;
                                 toEnd -= restValues;
                         }
                         __syncthreads();
@@ -183,6 +184,7 @@ __global__ void GaussianBlur(uint8_t* const blurredImage, const uint8_t* const r
 
                                 //iterar por todas las posiciones que se pueden cargar en la matriz
                                 for (temp = 0; temp < min(WMMA_K, pendingValues); temp++) {
+                                        /*old code
                                         //comprobacion de limites
                                         int filterX = ((temp + i) % filterWidth);
                                         int filterY = ((temp + i) / filterWidth);
@@ -193,6 +195,18 @@ __global__ void GaussianBlur(uint8_t* const blurredImage, const uint8_t* const r
                                         //agregar vecino a matriz
                                         localMatrix[indexWarp * WMMA_K + temp] = 
                                                 (half) rawImage[((imageY * width + imageX) * channels) + canal];
+                                        */
+
+                                        //comprobacion de limites
+                                        int filterX = ((temp + i) % filterWidth);
+                                        int filterY = ((temp + i) / filterWidth);
+                                        //obtener posicion pixel vecino
+                                        int imageX = min(max(x + filterX - halfFilterWidth, 0), width - 1);
+                                        int imageY = min(max(y + filterY - halfFilterWidth, 0), height - 1);
+                                        //agregar vecino a matriz
+                                        localMatrix[indexWarp * WMMA_K + temp] = 
+                                                interMatrix[((filterY - startFilterY) * (min(filterWidth - startFilterX, WMMA_K) + blockDim.x - 1) + (filterX - startFilterX) + threadIdx.x)];
+
                                 }
                                 //rellenar con 0 en caso de necesitarlo
                                 for (int j = temp; j < WMMA_K; j++) {
@@ -202,6 +216,7 @@ __global__ void GaussianBlur(uint8_t* const blurredImage, const uint8_t* const r
                                         }
                                 }
                         }
+
                         //agregar coeficiente en el filtro
                         if (indexWarp < min(WMMA_K, pendingValues) && warpId == 0) {
                                 for (int j = 0; j < numFilters; j++) {
