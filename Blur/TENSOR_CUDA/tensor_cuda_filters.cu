@@ -158,7 +158,7 @@ __global__ void GaussianBlur(uint8_t* const blurredImage, const uint8_t* const r
                                 //calcular numero de valores hasta fin de fila
                                 int restValues = min(filterWidth - startIdx, toEnd);
                                 //cargar datos en la matriz intermedia
-                                for (int j = 0; j < restValues + warpSize - 1 - indexWarp; j+= warpSize) {
+                                for (int j = 0; j < restValues + blockDim.x - 1 - threadIdx.x; j+= blockDim.x) {
                                         //posicion a cargar
                                         int filterX = startIdx + j;
                                         //posicion absoluta en imagen
@@ -167,15 +167,13 @@ __global__ void GaussianBlur(uint8_t* const blurredImage, const uint8_t* const r
                                         //comprobacion de limites
                                         if ((imageY >= height) || (imageY == height - 1 && imageX >= width)) {break;}
                                         // Cargar el valor del pixel en interMatrix
-                                        interMatrix[j + indexWarp + posIniRow] = (half)rawImage[((imageY * width + imageX) * channels) + canal];
+                                        interMatrix[j + threadIdx.x + posIniRow] = (half)rawImage[((imageY * width + imageX) * channels) + canal];
                                 }
-                                posIniRow += restValues + warpSize - 1;
+                                posIniRow += restValues + blockDim.x - 1;
                                 filterY++;
                                 startIdx = 0;
                                 toEnd -= restValues;
                         }
-
-
                         __syncthreads();
 
                         //data matrix
@@ -338,7 +336,8 @@ int main(int argc, char** argv)
         // espacio de memoria compartida
         size_t sharedMemorySize = (WMMA_M * WMMA_K) * NUM_WARPS * sizeof(half) + 
                                   (WMMA_N * WMMA_K) * sizeof(half) +
-                                  (WMMA_M * WMMA_N) * NUM_WARPS * 2 * sizeof(float);
+                                  (WMMA_M * WMMA_N) * NUM_WARPS * 2 * sizeof(float) +
+                                  (threadsPerBlock * 5) * sizeof(half); //tamanho max de la matrix intermedia
 
         // Iniciar el temporizador
         clock_t t = clock();
