@@ -177,7 +177,6 @@ __global__ void GaussianBlur(uint8_t* const blurredImage, const uint8_t* const r
                                 toEnd -= restValues;
                         }
                         __syncthreads();
-
                         //data matrix
                         // el indice no excede el numero de pixeles a cargar
                         if (indexWarp < WMMA_M) {
@@ -203,7 +202,9 @@ __global__ void GaussianBlur(uint8_t* const blurredImage, const uint8_t* const r
                                         int filterY = ((temp + i) / filterWidth);
                                         //obtener posicion pixel vecino
                                         int imageX = min(max(x + filterX - halfFilterWidth, 0), width - 1);
+                                        filterX = imageX - x + halfFilterWidth;
                                         int imageY = min(max(y + filterY - halfFilterWidth, 0), height - 1);
+                                        filterY = imageY - y + halfFilterWidth;
                                         //agregar vecino a matriz
                                         localMatrix[indexWarp * WMMA_K + temp] = 
                                                 interMatrix[((filterY - startFilterY) * (min(filterWidth - startFilterX, WMMA_K) * channels + blockDim.x - 1) + (filterX - startFilterX) * channels + threadIdx.x)];
