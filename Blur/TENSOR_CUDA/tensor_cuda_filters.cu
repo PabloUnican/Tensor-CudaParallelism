@@ -12,7 +12,7 @@
 #include <cuda_fp16.h>
 
 // max 23 warps por bloque (exceed shared memory)
-#define NUM_WARPS 8 // numero de warps por bloque maximo 32 (1024 threads)
+#define NUM_WARPS 12 // numero de warps por bloque maximo 32 (1024 threads)
 
 #define WMMA_M 32
 #define WMMA_N 8
@@ -160,14 +160,14 @@ __global__ void GaussianBlur(uint8_t* const blurredImage, const uint8_t* const r
                                 //calcular numero de valores hasta fin de fila
                                 int restValues = min(filterWidth - firstX, toEnd) * channels;
                                 //cargar datos en la matriz intermedia
-                                for (int j = 0; j < restValues + blockDim.x - 1 - threadIdx.x; j+= blockDim.x) {
-                                        //posicion a cargar
-                                        int posX = firstX + j;
+                                for (int j = threadIdx.x; j < restValues + blockDim.x - 1; j+= blockDim.x) {
+                                        //posicion de matriz a cargar
+                                        int posX = firstX + ((j - threadIdx.x) / channels);
                                         //posicion absoluta en imagen
                                         int imageX = min(max(x + posX - halfFilterWidth, 0), width - 1);
                                         int imageY = min(max(y + posY - halfFilterWidth, 0), height - 1);
                                         // Cargar el valor del pixel en interMatrix
-                                        interMatrix[j + threadIdx.x + posIniRow] = (half)rawImage[((imageY * width + imageX) * channels) + canal];
+                                        interMatrix[j + posIniRow] = (half)rawImage[((imageY * width + imageX) * channels) + canal];
                                 }
                                 posIniRow += restValues + blockDim.x - 1;
                                 posY++;
@@ -179,16 +179,21 @@ __global__ void GaussianBlur(uint8_t* const blurredImage, const uint8_t* const r
                         //data matrix
                         // el indice no excede el numero de pixeles a cargar
                         if (indexWarp < WMMA_M) {
-                                int temp = 0;
-
+                                int temp, lastFilterY = 0;
+                                firstX = startFilterX;
                                 //iterar por todas las posiciones que se pueden cargar en la matriz
-                                for (temp = 0; temp < min(WMMA_K, pendingValues); temp++) {
+                                for (int temp = 0; temp < min(WMMA_K, pendingValues); temp++) {
                                         //comprobacion de limites
-                                        int filterX = ((temp + i) % filterWidth);
-                                        int filterY = ((temp + i) / filterWidth);
+                                        int filterY = ((temp + i) / filterWidth) - startFilterY;
+                                        //comprobacion salto de fila
+                                        if (lastFilterY != filterY) {firstX = 0;}
+                                        int filterX = ((temp + i) % filterWidth) - firstX;
+                                        
                                         //agregar vecino a matriz
                                         localMatrix[indexWarp * WMMA_K + temp] = 
-                                                interMatrix[((filterY - startFilterY) * (min(filterWidth - startFilterX, WMMA_K) * channels + blockDim.x - 1) + (filterX - startFilterX) * channels + threadIdx.x)];
+                                                interMatrix[(filterY * (min(filterWidth - startFilterX, WMMA_K) * channels + blockDim.x - 1) + filterX * channels + threadIdx.x)];
+                                        //guardar la posicion Y usada
+                                        lastFilterY = filterY;
                                 }
                                 //rellenar con 0 en caso de necesitarlo
                                 for (int j = temp; j < WMMA_K; j++) {
