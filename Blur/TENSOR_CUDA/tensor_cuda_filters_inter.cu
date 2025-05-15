@@ -281,7 +281,7 @@ int main(int argc, char** argv)
 		printf("Please provide input and output image files, filter size and number of it as arguments to this application.\n");
 		exit(1);
 	}
-        
+        /*
         //PRINT TITLE
         printf(
                 " ░▒▓██████▓▒░ ░▒▓██████▓▒░░▒▓█▓▒░░▒▓█▓▒░░▒▓███████▓▒░▒▓███████▓▒░▒▓█▓▒░░▒▓██████▓▒░░▒▓███████▓▒░ \n"  
@@ -292,7 +292,7 @@ int main(int argc, char** argv)
                 "░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░      ░▒▓█▓▒░     ░▒▓█▓▒░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░\n" 
                 " ░▒▓██████▓▒░░▒▓█▓▒░░▒▓█▓▒░░▒▓██████▓▒░░▒▓███████▓▒░▒▓███████▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░▒▓█▓▒░░▒▓█▓▒░\n"
                 );
-        
+        */
         //crear filtros
         
         // matriz que guarda los filtros
@@ -316,6 +316,7 @@ int main(int argc, char** argv)
         
 	blurredImage=(uint8_t *)malloc(width*height*channels*numFilters*sizeof(uint8_t));
 	printf("Width:%d, Height:%d Size(in Bytes):%lu\n", width, height, (long unsigned int) width*height*bpp*channels);
+        printf("Filters:%d, Filter Width:%d, Balancer:%.2f\n", numFilters, filterWidth, balance);
 
         // Definir punteros para la memoria de la GPU
         uint8_t *d_originalImage, *d_blurredImage;
