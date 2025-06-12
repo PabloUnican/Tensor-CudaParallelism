@@ -1,2 +1,8 @@
 # Tensor-CudaParallelism
-TFG desarrollado por Pablo Saura Sánchez
+Autor: Pablo Saura Sánchez
+
+En este trabajo se aborda el diseño y la implementación de kernels de convolución Gaussiana que combinan CUDA Cores y Tensor Cores en GPUs modernas, con especial atención a los desafíos de organización de datos y gestión de memoria. Desarrollamos una transformación manual del vecindario de cada píxel en una matriz intermedia, garantizando que los 32 threads de cada warp lean posiciones contiguas en memoria global. Se declarará un espacio fijo de memoria shared para que distintos fragmentos (entrada, filtro y acumulador) compartan el mismo bloque de \texttt{shared} sin interferencias.
+
+La obligación de declarar un tamaño fijo de memoria compartida llevó a diseñar un esquema en el que, aunque el buffer se reserva una sola vez por bloque, cada warp calcula su propio offset de lectura y escritura, salvaguardando espacio para otros warps que cubran la latencia. Además, reescribimos comprobaciones de límites y bucles de carga con operaciones aritméticas y máscaras, lo que unificó el flujo de ejecución dentro de cada warp y limitó al mínimo las sincronizaciones necesarias.
+
+En paralelo, investigamos distintas estrategias de paralelismo: kernels dedicados por completo a CUDA Cores, otros al 100\% a Tensor Cores y versiones híbridas que alternan dinámicamente entre ambos. Esta variedad de aproximaciones permitió identificar los cuellos de botella reales (tanto en cómputo como en memoria) y probar técnicas para optimizar la coalescencia en caches L1/L2. El resultado es un conjunto de prácticas para maximizar el rendimiento en operaciones matriciales de gran tamaño, que serán evaluadas en detalle en las secciones siguientes.
